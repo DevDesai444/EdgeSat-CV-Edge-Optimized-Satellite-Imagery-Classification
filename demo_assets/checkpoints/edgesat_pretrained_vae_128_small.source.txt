@@ -1,0 +1,1 @@
+demo_assets/checkpoints/edgesat_pretrained_vae_128_small/edgesat_pretrained_vae_128_small_run_3k0vhd2o_epoch_00_step_29653.ckpt

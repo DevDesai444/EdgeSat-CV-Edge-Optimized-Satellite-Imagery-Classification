@@ -2,3 +2,8 @@
 __pycache__/
 *.pyc
 .ipynb_checkpoints/
+.cache/
+datasets/
+outputs/
+demo_assets/eval_archives/
+demo_assets/downloads/

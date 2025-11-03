@@ -1,0 +1,1 @@
+demo_assets/checkpoints/edgesat_pretrained_vae_128_medium/edgesat_pretrained_vae_128_medium_run_171v6wob_epoch_00_step_29653.ckpt
