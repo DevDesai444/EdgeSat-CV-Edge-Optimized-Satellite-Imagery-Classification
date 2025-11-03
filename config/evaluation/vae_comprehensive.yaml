@@ -1,5 +1,5 @@
 ---
-# Used for paper results
+# Comprehensive VAE evaluation preset
 plot_sequences: true # optional to plot all 5+ frame sequences on wandb
 save_plots_locally: false # optional to save plots on local machine
 visualisation_channels: ${channels.visualisation_channels}
