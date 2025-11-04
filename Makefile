@@ -5,9 +5,9 @@
 #################################################################################
 
 PROJECT_DIR := $(shell dirname $(realpath $(lastword $(MAKEFILE_LIST))))
-BUCKET = [OPTIONAL] your-bucket-for-syncing-data (do not include 's3://')
+BUCKET ?=
 PROFILE = default
-PROJECT_NAME = change-detection
+PROJECT_NAME = edgesat_cv_env
 PYTHON_INTERPRETER = python3
 
 ifeq (,$(shell which conda))

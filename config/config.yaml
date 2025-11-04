@@ -1,5 +1,7 @@
 ---
-entity: "mlpayloads"
+project: "edgesat_cv"
+entity: "devdesai444-university-at-buffalo"
+wandb_mode: "auto"
 
-log_dir: "/data/results"
-cache_dir: "/data/cache"
+log_dir: "outputs"
+cache_dir: ".cache"
