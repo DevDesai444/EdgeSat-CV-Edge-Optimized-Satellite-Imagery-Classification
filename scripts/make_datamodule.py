@@ -9,7 +9,7 @@ from src.utils import deepconvert
 from src.data.datamodule import ParsedDataModule
 
 
-@hydra.main(config_path='../config', config_name='config.yaml')
+@hydra.main(version_base=None, config_path='../config', config_name='config.yaml')
 def main(cfg):
     cfg = deepconvert(cfg)
 

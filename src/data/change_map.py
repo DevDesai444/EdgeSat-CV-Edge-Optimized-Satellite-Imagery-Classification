@@ -1,3 +1,4 @@
+import argparse
 from visualization_utils import file_exists, visualize_rgb
 from filter_utils import filter_file_list
 import fsspec
@@ -7,6 +8,11 @@ from matplotlib import pyplot as plt
 
 import numpy as np
 import save_cog
+
+try:
+    from src.data.gcs_config import bucket_path
+except ImportError:
+    from gcs_config import bucket_path
 
 def open_prediction(tif_path):
     src = rasterio.open("gs://" + tif_path)
@@ -109,28 +115,15 @@ def generate_change_maps(root_directory):
         save_change_map(changes, file_name, src.profile)
 
 if __name__=="__main__":
-    fs = fsspec.filesystem("gs")
-    
-    """
-    # Only on filtered, "well behaving" folders:
-    root_folder = "gs://fdl-ml-payload/worldfloods_change_TestDownload3/train/S2/*/*.csv"
-    _, filtered_folders, list_of_files = filter_file_list(fs, root_folder, subset=50)
-    print("Prefiltered", len(filtered_folders), "folders.")
+    parser = argparse.ArgumentParser(
+        description='Generate binary change maps from segmentation predictions stored in GCS.'
+    )
+    parser.add_argument(
+        '--root-directory',
+        default=None,
+        help='Explicit gs:// root containing event folders. Defaults to gs://<EDGESAT_GCS_BUCKET>/train/S2.',
+    )
+    args = parser.parse_args()
 
-    for demo_folder_csv in list_of_files:
-        print(demo_folder_csv.filename)
-        if len(demo_folder_csv.filename) > 1: # at least two
-            image_path_1 = demo_folder_csv.filename.iloc[0]            
-            image_path_2 = demo_folder_csv.filename.iloc[-1]
-
-         change_map_for_pair(fs, image_path_1, image_path_2)
-
-    image_path_1 = "fdl-ml-payload/worldfloods_change_TestDownload3/train/S2/EMSR260_01CICOGNARA_DEL_MONIT01_v2_observed_event_a/2017-11-18.tif"
-    image_path_2 = "fdl-ml-payload/worldfloods_change_TestDownload3/train/S2/EMSR260_01CICOGNARA_DEL_MONIT01_v2_observed_event_a/2017-12-13.tif"
-    generate_change_maps("fdl-ml-payload/worldfloods_change_TestDownload3/train/S2")
-    """
-
-    #root_directory = "gs://fdl-ml-payload/worldfloods_change_singleScene/train/S2"
-    root_directory = "gs://fdl-ml-payload/worldfloods_change_TestDownload3/train/S2"
-    root_directory = "gs://fdl-ml-payload/worldfloods_change_Germany_multiScene_v01"
+    root_directory = args.root_directory or bucket_path('train', 'S2')
     generate_change_maps(root_directory)

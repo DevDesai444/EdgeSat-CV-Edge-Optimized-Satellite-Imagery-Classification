@@ -1,3 +1,4 @@
+import argparse
 from ml4floods.models.config_setup import get_default_config
 from ml4floods.models.model_setup import get_model
 from ml4floods.models.model_setup import get_model_inference_function
@@ -10,6 +11,11 @@ import numpy as np
 import fsspec
 from multiprocessing import Pool, Lock
 from datetime import datetime
+
+try:
+    from src.data.gcs_config import bucket_path
+except ImportError:
+    from gcs_config import bucket_path
 
 
 MODEL_NAME = "WFV1_unet"
@@ -26,7 +32,13 @@ def load_inference_function():
     config["model_params"]['model_folder'] = 'gs://ml4cc_data_lake/2_PROD/2_Mart/2_MLModelMart'
     config["model_params"]['test'] = True
     model = get_model(config.model_params, experiment_name)
-    model.to("cuda")
+    if torch.cuda.is_available():
+        device = "cuda"
+    elif getattr(torch.backends, 'mps', None) and torch.backends.mps.is_available():
+        device = "mps"
+    else:
+        device = "cpu"
+    model.to(device)
     channels = get_channel_configuration_bands(config.model_params.hyperparameters.channel_configuration)
 
     return get_model_inference_function(model, config,apply_normalization=True), channels
@@ -51,9 +63,20 @@ def parallel_fun(x):
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(
+        description='Generate water segmentation masks for Sentinel-2 tiles stored in GCS.'
+    )
+    parser.add_argument(
+        '--input-glob',
+        default=None,
+        help='Explicit gs:// glob for Sentinel-2 TIFFs. Defaults to gs://<EDGESAT_GCS_BUCKET>/worldfloods_change/*/S2/*/*.tif.',
+    )
+    args = parser.parse_args()
+
     inference_function, channels = load_inference_function()
     fs = fsspec.filesystem("gs")
-    tiff_files = fs.glob("gs://fdl-ml-payload/worldfloods_change_TestDownload3/*/S2/*/*.tif")
+    input_glob = args.input_glob or bucket_path('worldfloods_change', '*', 'S2', '*', '*.tif')
+    tiff_files = fs.glob(input_glob)
     tiff_files = [f for f in tiff_files if not fs.exists(f"gs://{f}".replace("/S2/", "/segmentation/"))]
 
     num_workers = 0
@@ -78,6 +101,3 @@ if __name__ == "__main__":
 
             save_cog.save_cog(prediction, filename_save, profile=profile,
                               tags={"model": MODEL_NAME})
-
-
-

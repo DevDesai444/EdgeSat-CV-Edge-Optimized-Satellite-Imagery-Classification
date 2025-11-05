@@ -3,10 +3,19 @@
 data_module_name: "floods_evaluation"
 
 # Root directory for train, val and test data, nested in folders inside this location
-root_folder: "/data/local/validation_data_final/floods"
+root_folder: "datasets/floods"
+
+staging:
+  enabled: true
+  provider: "eval_event_gdrive"
+  stage_root: ${cache_dir}/staged_datasets
+  archive_root: ${cache_dir}/staged_archives
+  cleanup_policy: "on_success"
+  delete_archive_after_extract: true
 
 window_size: [32, 32]
 overlap: [0, 0]
+test_overlap: [0, 0]
 input_shape : [32, 32] # used in evaluate_model.py to get cfg_module['input_shape']
 
 
@@ -19,7 +28,7 @@ train:
     tiling_strategy_cls: 'src.data.tiling_strategy.TilingStrategyFullGrid'
     tiling_strategy_args:
       window_size: ${dataset.window_size}
-      overlap: ${dataset.overlap}$
+      overlap: ${dataset.overlap}
 
     dataset_specs:
       - src.data.dataset.SingleFolderImageDataset:
@@ -44,7 +53,7 @@ valid:
     tiling_strategy_cls: 'src.data.tiling_strategy.TilingStrategyFullGrid'
     tiling_strategy_args:
       window_size: ${dataset.window_size}
-      overlap: ${dataset.overlap}$
+      overlap: ${dataset.overlap}
 
     dataset_specs:
       - src.data.dataset.SingleFolderImageDataset:
@@ -70,7 +79,7 @@ test:
     tiling_strategy_cls: 'src.data.tiling_strategy.TilingStrategyFullGrid'
     tiling_strategy_args:
       window_size: ${dataset.window_size}
-      overlap: ${dataset.overlap}$
+      overlap: ${dataset.overlap}
 
     dataset_specs:
       - src.data.dataset.SingleFolderImageDataset:

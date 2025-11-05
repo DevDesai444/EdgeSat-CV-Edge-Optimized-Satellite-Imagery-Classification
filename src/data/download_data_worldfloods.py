@@ -19,6 +19,11 @@ import numpy as np
 import json
 import math
 
+try:
+    from src.data.gcs_config import bucket_path
+except ImportError:
+    from gcs_config import bucket_path
+
 
 BANDS_S2_NAMES = {
     "COPERNICUS/S2": ["B1", "B2", "B3", "B4", "B5", "B6", "B7", "B8", "B8A", "B9", "B10", "B11", "B12", "QA60"],
@@ -480,7 +485,7 @@ THRESHOLD_CLOUDS = .20
 THRESHOLD_INVALIDS = .70
 THRESHOLD_CLOUDS = .70
 
-LOC_SAVE = "gs://fdl-ml-payload/worldfloods_change/"
+LOC_SAVE = None
 
 
 def check_rerun(name_dest_csv, scene_id):
@@ -502,11 +507,29 @@ def check_rerun(name_dest_csv, scene_id):
 
 
 if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description='Query and export WorldFloods-aligned Sentinel-2 scenes into Google Cloud Storage.'
+    )
+    parser.add_argument(
+        '--collection-path',
+        default=None,
+        help='Explicit gs:// destination root for downloaded Sentinel-2 event folders.',
+    )
+    parser.add_argument(
+        '--meta-glob',
+        default=None,
+        help='Explicit gs:// glob for WorldFloods metadata json files.',
+    )
+    args = parser.parse_args()
+
     collection_name = "COPERNICUS/S2"
-    collection_path = "gs://fdl-ml-payload/worldfloods_change_TestDownload3/"
+    collection_path = args.collection_path or bucket_path('worldfloods_change_collection')
 
     fs = fsspec.filesystem("gs")
-    meta_files = fs.glob("gs://fdl-ml-payload/worldfloods_v1_0/*/meta/*")
+    meta_glob = args.meta_glob or bucket_path('worldfloods_v1_0', '*', 'meta', '*')
+    meta_files = fs.glob(meta_glob)
     resolution_out_meters = 10
 
     tasks = []
@@ -569,6 +592,4 @@ if __name__ == "__main__":
         tasks.extend(tasks_iter)
 
     wait_tasks(tasks)
-
-
 

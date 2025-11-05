@@ -1,7 +1,13 @@
+import argparse
 import fsspec
 import pandas as pd
 import numpy as np 
 from tqdm import tqdm
+
+try:
+    from src.data.gcs_config import bucket_path
+except ImportError:
+    from gcs_config import bucket_path
 
 
 def load_csv_with_file_links(fs, folder):
@@ -78,11 +84,18 @@ def filter_file_list(fs, root_folder, BEFORE_THR_INVALIDS = .25, AFTER_THR_INVAL
     return merged_df, filtered_folders, list_of_dfs
 
 if __name__=="__main__":
-    fs = fsspec.filesystem("gs")
-    #folder = "gs://fdl-ml-payload/worldfloods_change_TestDownload3/train/S2/EMSR258_06VLORE_DEL_v2_observed_event_a"
-    #load_csv_with_file_links(fs, folder)
+    parser = argparse.ArgumentParser(
+        description='Filter WorldFloods metadata CSVs using cloud and validity thresholds.'
+    )
+    parser.add_argument(
+        '--root-folder',
+        default=None,
+        help='Explicit gs:// glob for metadata CSVs. Defaults to gs://<EDGESAT_GCS_BUCKET>/train/S2/*/*.csv.',
+    )
+    args = parser.parse_args()
 
-    root_folder = "gs://fdl-ml-payload/worldfloods_change_TestDownload3/train/S2/*/*.csv"
+    fs = fsspec.filesystem("gs")
+    root_folder = args.root_folder or bucket_path('train', 'S2', '*', '*.csv')
     metadata_df, filtered_folders, _ = filter_file_list(fs, root_folder) #, .6,.6,.6,.6)
     
     print("Prefiltered", len(filtered_folders), "folders.")

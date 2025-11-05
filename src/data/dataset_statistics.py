@@ -2,12 +2,16 @@
 # Used to query information about dataset statistics
 #
 
+import argparse
 import fsspec
 from matplotlib import pyplot as plt 
 import rasterio
 import numpy as np 
-from glob import glob 
-from timeit import default_timer as timer
+
+try:
+    from src.data.gcs_config import bucket_path
+except ImportError:
+    from gcs_config import bucket_path
 
 
 def get_pixel_counts_from_label(src):
@@ -36,15 +40,24 @@ def get_pixel_counts_from_label(src):
     print("change to no change ratio:", change_to_no_change)
 
 if __name__=="__main__":
+    parser = argparse.ArgumentParser(
+        description='Summarize event areas and change-pixel counts for evaluation datasets.'
+    )
+    parser.add_argument(
+        '--datasets',
+        nargs='+',
+        default=["fires", "floods", "hurricanes", "landslides", "oilspills", "volcanos"],
+        help='Dataset names to inspect under gs://<EDGESAT_GCS_BUCKET>/evaluation_events/.',
+    )
+    args = parser.parse_args()
+
     fs = fsspec.filesystem("gs")
-    
-    datasets = [ "fires", "floods", "hurricanes", "landslides", "oilspills", "volcanos" ]    
-    #datasets = [ "floods" ]
+    datasets = args.datasets
 
     count_pixels = True
 
     for dataset in datasets:
-        root_folder = "gs://fdl-ml-payload/validation/validation_data_final/"+dataset+"/*"
+        root_folder = bucket_path('evaluation_events', dataset, '*')
 
         folders = fs.glob(root_folder)
         print(len(folders), folders)

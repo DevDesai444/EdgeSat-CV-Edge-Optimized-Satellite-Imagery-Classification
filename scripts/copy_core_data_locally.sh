@@ -1,16 +1,9 @@
-# --- Might need to sudo bash run this script
-# This script downloads the main datasets for our experiments 
-# from the google bucket
+#!/bin/bash
 
-mkdir -p /data/local
+set -euo pipefail
 
-# for alpha_multiscene 
-gsutil -m cp -r gs://fdl-ml-payload/worldfloods_change_no_duplicates /data/local/.
+python3 -m scripts.download_eval_events "$@"
 
-# for alpha_singlescene
-gsutil -m cp -r gs://fdl-ml-payload/worldfloods_change_trainSingleScene_1800x2600_with_val /data/local.
-
-# for floods_evaluation
-gsutil -m cp -r gs://fdl-ml-payload/validation/validation_data_final /data/local/.
-
-chmod -R 777 /data/local
+mkdir -p datasets/train_multiscene datasets/train_singlescene
+printf '%s\n' "Evaluation event archives are extracted under ./datasets."
+printf '%s\n' "Prepare WorldFloods training data separately via ml4floods and place it under ./datasets/train_multiscene or ./datasets/train_singlescene."

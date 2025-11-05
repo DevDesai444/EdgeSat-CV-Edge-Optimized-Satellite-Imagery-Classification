@@ -3,7 +3,15 @@
 data_module_name: "alpha_multiscene"
 
 # Root directory for train, val and test data, nested in folders inside this location
-root_folder: "/data/local/worldfloods_change_no_duplicates/train"
+root_folder: "datasets/train_multiscene"
+
+staging:
+  enabled: false
+  provider: "gdrive_archive"
+  stage_root: ${cache_dir}/staged_datasets
+  archive_root: ${cache_dir}/staged_archives
+  cleanup_policy: "on_success"
+  delete_archive_after_extract: true
 
 window_size: [32, 32]
 
