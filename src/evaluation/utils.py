@@ -8,7 +8,7 @@ import torch
 from torchvision.transforms import ToPILImage
 
 from src.data.save_cog import save_cog
-from src.utils import load_obj
+from src.utils import load_obj, resolve_wandb_entity, resolve_wandb_mode, maybe_wandb_login
 
 
 def as_plot(image, name, save=False):
@@ -24,8 +24,13 @@ def as_plot(image, name, save=False):
 
 
 def wandb_init(project_name="visualize_evaluation"):
-    wandb.login()
-    wandb.init(project=project_name, config={})
+    maybe_wandb_login(wandb)
+    wandb.init(
+        project=project_name,
+        entity=resolve_wandb_entity(),
+        mode=resolve_wandb_mode(),
+        config={},
+    )
 
 
 def prepare_image(x):

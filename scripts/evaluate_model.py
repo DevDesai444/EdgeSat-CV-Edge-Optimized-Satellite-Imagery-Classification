@@ -1,52 +1,28 @@
 """
-Example usage AE:
+Example usage:
     python3 -m scripts.evaluate_model \
         +dataset=floods_evaluation \
-        +training=simple_ae \
-        +normalisation=log_scale \
-        +channels=rgb \
-        +module=simple_ae_with_linear \
-        +checkpoint=/data/ml_payload/results/vae_fullgrid/w1b4uo19/checkpoints/epoch_34-step_28139.ckpt \
-        +project=eval_reboot \ 
-        +evaluation=ae_base
-        #+name=whatever_name_you_want
-        
-Example usage VAE:
-    python3 -m scripts.evaluate_model \
-        +dataset=floods_evaluation \
+        ++dataset.root_folder=datasets/floods \
         +training=simple_vae \
         +normalisation=log_scale \
         +channels=high_res \
-        +module=simple_vae \
-        +checkpoint=/data/ml_payload/results/vae_multiscene/1czqxk3x/checkpoints/epoch_00-step_4499.ckpt \
-        +project=eval_reboot \
-        +evaluation=vae_base
-
-Example usage VAE with DA:
-    python3 -m scripts.evaluate_model \
-        +dataset=floods_evaluation \
-        ++dataset.window_size=[34,34] \
-        ++dataset.overlap=[2,2] \
-        +training=simple_vae \
-        +normalisation=log_scale \
-        +channels=high_res \
-        +module=simple_vae \
-        +checkpoint=/data/ml_payload/results/vae_multiscene/1czqxk3x/checkpoints/epoch_00-step_4499.ckpt \
-        +project=eval_reboot \
-        +evaluation=vae_da \
-        +transform=eval.yaml
+        +module=deeper_vae \
+        +checkpoint=demo_assets/checkpoints/edgesat_pretrained_vae_128_small.ckpt \
+        +project=edgesat_eval \
+        +evaluation=vae_comprehensive \
+        +name=edgesat_eval_floods
 """
 from tqdm import tqdm
 import hydra
 import torch
 import wandb
+import os
 
 from pathlib import Path
 from numpy import inf
 import numpy as np
 import pandas as pd
 import seaborn as sns
-import os
 
 from itertools import repeat
 from torch.multiprocessing import Pool, Process, set_start_method
@@ -59,10 +35,29 @@ from torchvision.transforms import ToPILImage
 from pytorch_lightning import loggers, seed_everything
 
 from src.data.datamodule import ParsedDataModule
-from src.utils import load_obj, deepconvert
+from src.data.staging import prepared_dataset_config
+from src.utils import load_obj, deepconvert, resolve_wandb_entity, resolve_wandb_mode
 from src.evaluation.utils import get_eval_result, tassellate, as_plot
 from src.models.ae_vae_models.base_vae import BaseVAE
 import matplotlib.pyplot as plt
+
+
+def resolve_device(cfg_train):
+    has_cuda = torch.cuda.is_available()
+    has_mps = getattr(torch.backends, 'mps', None) and torch.backends.mps.is_available()
+    gpus_cfg = cfg_train.get('gpus', 'auto')
+    if gpus_cfg == 'auto':
+        wants_acceleration = True
+    elif isinstance(gpus_cfg, str) and gpus_cfg.isdigit():
+        wants_acceleration = int(gpus_cfg) > 0
+    else:
+        wants_acceleration = gpus_cfg not in (None, 0, '0', False)
+
+    if wants_acceleration and has_cuda:
+        return torch.device('cuda')
+    if wants_acceleration and has_mps:
+        return torch.device('mps')
+    return torch.device('cpu')
 
 
 TRANSFORM = ToPILImage()
@@ -109,54 +104,70 @@ def dumb_pool_api(detection_methods, is_vae, embs_now, data_now,
         return results
 
 
-@hydra.main(config_path='../config', config_name='config.yaml')
+@hydra.main(version_base=None, config_path='../config', config_name='config.yaml')
 def main(cfg):
     # Load configs
     cfg = deepconvert(cfg)
 
     ### DON'T seed_everything(42, workers=True)
-    
-    # Load and setup the dataloaders
-    data_module = \
-        ParsedDataModule.load_or_create(cfg['dataset'], cfg['cache_dir'])
 
-    # Setting up module and loading weights
-    cfg_train = cfg['training']
-    cfg_module = cfg['module']
-    cfg_eval = cfg['evaluation']
-    cfg_module['input_shape'] = [data_module.sample_shape_train_ds.to_tuple()[0][0]] + cfg['dataset']['input_shape'] # [channels] + [input shape] ~ ex. [10]+[32,32]
+    with prepared_dataset_config(cfg['dataset'], cfg['cache_dir']) as dataset_cfg:
+        cfg['dataset'] = dataset_cfg
 
-    module = load_obj(cfg['module']['class'])(cfg_module, cfg_train)
+        # Load and setup the dataloaders
+        data_module = ParsedDataModule.load_or_create(cfg['dataset'], cfg['cache_dir'])
 
-    # load transformation modules
-    input_trans_cls = cfg_eval.pop("input_trans_cls", "src.data.transformations.NoTransformer")
-    input_trans_args = cfg_eval.pop("input_trans_args", list())
-    target_trans_cls = cfg_eval.pop("target_trans_cls", "src.data.transformations.NoTransformer")
-    target_trans_args = cfg_eval.pop("target_trans_args", list())
+        # Setting up module and loading weights
+        cfg_train = cfg['training']
+        cfg_module = cfg['module']
+        cfg_eval = cfg['evaluation']
+        cfg_module['input_shape'] = [data_module.sample_shape_train_ds.to_tuple()[0][0]] + cfg['dataset']['input_shape'] # [channels] + [input shape] ~ ex. [10]+[32,32]
 
-    input_transformer = load_obj(input_trans_cls)(*input_trans_args)
-    target_transformer = load_obj(target_trans_cls)(*target_trans_args)
+        module = load_obj(cfg['module']['class'])(cfg_module, cfg_train)
 
-    checkpoint_root_path = Path(cfg['checkpoint']).parent.parent
-    hparams_path = checkpoint_root_path / 'hparams.yaml'
-    checkpoint_path = cfg['checkpoint']
+        # load transformation modules
+        input_trans_cls = cfg_eval.pop("input_trans_cls", "src.data.transformations.NoTransformer")
+        input_trans_args = cfg_eval.pop("input_trans_args", list())
+        target_trans_cls = cfg_eval.pop("target_trans_cls", "src.data.transformations.NoTransformer")
+        target_trans_args = cfg_eval.pop("target_trans_args", list())
 
-    print(f'Loading checkpoint {checkpoint_path}')
-    module = module.load_from_checkpoint(str(checkpoint_path),
-                                         hparams_file=str(hparams_path),
-                                         cfg=cfg_module,
-                                         train_cfg=cfg_train)
-    module = module.cuda().eval()
+        input_transformer = load_obj(input_trans_cls)(*input_trans_args)
+        target_transformer = load_obj(target_trans_cls)(*target_trans_args)
 
-    log_name = cfg.get('name', None)
-    logger = loggers.WandbLogger(save_dir=cfg['log_dir'], name=log_name, \
-        project=cfg['project'], entity=cfg['entity'])
-    logger.experiment.config.update(cfg) # store config used
+        checkpoint_root_path = Path(cfg['checkpoint']).parent.parent
+        hparams_path = checkpoint_root_path / 'hparams.yaml'
+        checkpoint_path = cfg['checkpoint']
 
-    evaluate_model(module, data_module, cfg['evaluation'], cfg_module['input_shape'], logger, input_transformer, target_transformer)
+        device = resolve_device(cfg_train)
+
+        print(f'Loading checkpoint {checkpoint_path} on {device}')
+        load_kwargs = dict(
+            checkpoint_path=str(checkpoint_path),
+            cfg=cfg_module,
+            train_cfg=cfg_train,
+        )
+        if hparams_path.exists():
+            load_kwargs['hparams_file'] = str(hparams_path)
+
+        module = module.load_from_checkpoint(**load_kwargs)
+        module = module.to(device).eval()
+
+        log_name = cfg.get('name', None)
+        wandb_mode = resolve_wandb_mode(cfg)
+        os.environ['WANDB_MODE'] = wandb_mode
+        logger = loggers.WandbLogger(
+            save_dir=cfg['log_dir'],
+            name=log_name,
+            project=cfg['project'],
+            entity=resolve_wandb_entity(cfg),
+            offline=wandb_mode == 'offline',
+        )
+        logger.experiment.config.update(cfg) # store config used
+
+        evaluate_model(module, data_module, cfg['evaluation'], cfg_module['input_shape'], logger, input_transformer, target_transformer, device)
 
 
-def evaluate_model(module, data_module, cfg_evaluation, input_shape, logger, input_transformer, target_transformer):
+def evaluate_model(module, data_module, cfg_evaluation, input_shape, logger, input_transformer, target_transformer, device):
     dataloaders = data_module.test_dataloader()
     if not isinstance(dataloaders, list):
         dataloaders = list(dataloaders)
@@ -227,13 +238,15 @@ def evaluate_model(module, data_module, cfg_evaluation, input_shape, logger, inp
             data_all[n_tiles: n_tiles+batch_size] = data
             changes_all[n_tiles: n_tiles+batch_size] = changes
 
-            rec = module(data.cuda())
+            data_on_device = data.to(device)
+
+            rec = module(data_on_device)
             if is_vae:
                 rec = rec[0]
             rec = rec.detach().cpu()
             recons[n_tiles: n_tiles+batch_size] = rec
             
-            emb = module.model.encode(data.cuda())
+            emb = module.model.encode(data_on_device)
             if is_vae:
                 emb = torch.cat(emb, dim=1)
             emb = emb.detach().cpu()

@@ -1,3 +1,4 @@
+import argparse
 import matplotlib
 from pandas.core import indexing
 from filter_utils import load_csv_with_file_links, filter_file_list
@@ -9,6 +10,16 @@ import numpy as np
 import wandb
 from glob import glob 
 from timeit import default_timer as timer
+
+try:
+    from src.utils import resolve_wandb_entity, resolve_wandb_mode, maybe_wandb_login
+except ImportError:
+    from utils import resolve_wandb_entity, resolve_wandb_mode, maybe_wandb_login
+
+try:
+    from src.data.gcs_config import bucket_path
+except ImportError:
+    from gcs_config import bucket_path
 
 # TODO: Maybe also show near infra-red also, good for water ~ will be black prolly
 #       (12, 8, 4) ~ good enough info for water vs ground vs vegetation => maybe better visualization
@@ -105,7 +116,7 @@ def visualize_folder(fs, folder, force_process_all=False):
 
 
 def init_wandb():
-    wandb.login()
+    maybe_wandb_login(wandb)
 
 
 def wandb_show_folders(folders, dry_run = False, load_n_rows=15, wandb_table_name = "table_view_v4", force_process_all=False):
@@ -115,8 +126,12 @@ def wandb_show_folders(folders, dry_run = False, load_n_rows=15, wandb_table_nam
 
     if not dry_run:
         init_wandb()
-        #wandb.init(project='visualize_change_floods', entity='mlpayloads') 
-        wandb.init(project="visualize_change_floods", config={})
+        wandb.init(
+            project="dataset_visualization",
+            entity=resolve_wandb_entity(),
+            mode=resolve_wandb_mode(),
+            config={},
+        )
         
     data_rows = []
     expected_images = 5
@@ -183,43 +198,28 @@ def wandb_show_folders(folders, dry_run = False, load_n_rows=15, wandb_table_nam
 
 
 if __name__=="__main__":
+    parser = argparse.ArgumentParser(
+        description='Visualize filtered folders from a GCS-backed dataset and log them to W&B.'
+    )
+    parser.add_argument(
+        '--root-folder',
+        default=None,
+        help='Explicit gs:// glob for metadata CSVs. Defaults to gs://<EDGESAT_GCS_BUCKET>/train_multiscene/*/S2/*.csv.',
+    )
+    parser.add_argument('--load-n-rows', type=int, default=None, help='Maximum number of folders to log.')
+    parser.add_argument('--dry-run', action='store_true', help='Build the table without starting a W&B run.')
+    parser.add_argument('--force-process-all', action='store_true', help='Disable image-size guards during rendering.')
+    args = parser.parse_args()
+
     fs = fsspec.filesystem("gs")
-
-    """
-    # On all folders:
-    folders = fs.glob("gs://fdl-ml-payload/worldfloods_change_TestDownload3/train/S2/*")
-    np.random.shuffle(folders)
-    subset = folders # ends after 20 rows anyways
-    print(len(subset), subset[0:2])
-    wandb_show_folders(subset, dry_run = False, load_n_rows=len(subset))
-
-    """
-
-    # Only on filtered, "well behaving" folders:
-    #root_folder = "gs://fdl-ml-payload/worldfloods_change_TestDownload3/train/S2/*/*.csv"
-    root_folder = "gs://fdl-ml-payload/worldfloods_change_singleScene_500x500/EMSR260_02VIADANA_DEL_MONIT01_v2_observed_event_a/S2/*.csv"
-    root_folder = "gs://fdl-ml-payload/worldfloods_change_singleScene_800x1000/*/S2/*.csv"
-    root_folder = "gs://fdl-ml-payload/worldfloods_change_singleScene_2000x1500/*/S2/*.csv"
-    root_folder = "gs://fdl-ml-payload/fire_change_singleScene/*/S2/*.csv"
-    # all fire samples (may have a lot more than just 5 !)
-    root_folder = "gs://fdl-ml-payload/fire_change/test_download_5/fire_change/S2/*/*.csv"
-
-    
-    root_folder = "gs://fdl-ml-payload/worldfloods_change_no_duplicates/train/*/S2/*.csv"
-    force_process_all=True
-
+    root_folder = args.root_folder or bucket_path('train_multiscene', '*', 'S2', '*.csv')
     _, filtered_folders, _ = filter_file_list(fs, root_folder)
     print("Prefiltered", len(filtered_folders), "folders.")
 
-    wandb_show_folders(filtered_folders, dry_run = False, load_n_rows=len(filtered_folders),force_process_all=force_process_all)
-
-
-    # Timing loading of a single event:
-    """
-    start = timer()
-    folder = "fdl-ml-payload/worldfloods_change_TestDownload3/train/S2/EMSR258_06VLORE_DEL_v2_observed_event_a"
-    visualize_folder(fs, folder)
-    end = timer()
-    time = (end - start)
-    print("This run took "+str(time)+"s ("+str(time/60.0)+"min)")
-    """
+    load_n_rows = args.load_n_rows or len(filtered_folders)
+    wandb_show_folders(
+        filtered_folders,
+        dry_run=args.dry_run,
+        load_n_rows=load_n_rows,
+        force_process_all=args.force_process_all,
+    )
