@@ -2,10 +2,19 @@
 This module contains functions to use GRX and VAE modules to caluate anomaly scores
 """
 import numpy as np
+import torch
+
+
+def _runtime_device():
+    if torch.cuda.is_available():
+        return torch.device('cuda')
+    if getattr(torch.backends, 'mps', None) and torch.backends.mps.is_available():
+        return torch.device('mps')
+    return torch.device('cpu')
 
 
 def vae_anomaly_function(model, x, invalid_mask):
-    x = x.cuda()
+    x = x.to(_runtime_device())
 
     if "SimpleAE" in str(model.model.__class__):
         reconstruction = model.forward(x)  # batch, channels, w, h
@@ -56,7 +65,7 @@ def grx_anomaly_function(model, x, invalid_mask):
 
 #### For change detection:
 def vae_anomaly_function_with_latents(model, x, invalid_mask, latents_keep_tensors=False):
-    x = x.cuda()
+    x = x.to(_runtime_device())
     if "SimpleAE" in str(model.model.__class__):
         reconstruction = model.model.forward(x) # batch, channels, w, h
         latent = model.model.encode(x) # batch, latent_dim
@@ -98,7 +107,7 @@ def vae_anomaly_function_with_latents(model, x, invalid_mask, latents_keep_tenso
 
 
 def vae_anomaly_only_latents(model, x, latents_keep_tensors=False):
-    x = x.cuda()
+    x = x.to(_runtime_device())
 
     if "SimpleAE" in str(model.model.__class__):
         latent = model.model.encode(x) # batch, latent_dim

@@ -23,8 +23,7 @@ class MetricEvaluator:
         self.selection_top_frac = selection_top_frac
 
         if plot_directory is None:
-            self.plot_directory = \
-                "/home/vit.ruzicka/branches/w4/change-detection"
+            self.plot_directory = "./outputs"
         else:
             self.plot_directory = plot_directory
 
@@ -94,4 +93,3 @@ class MetricEvaluator:
         plt.ylabel('Anomaly score')
         plt.suptitle("Spearman cor = "+str(spearman_cor))
         return fig
-

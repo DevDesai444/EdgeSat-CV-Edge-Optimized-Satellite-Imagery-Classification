@@ -1,13 +1,12 @@
 import pandas as pd
 import wandb
 import json
-from os import listdir
-from os.path import isfile, join
 import urllib.request
 import numpy as np
 
-api = wandb.Api()
-#mlpayloads/eval_paper_VAE_100
+
+def get_api():
+    return wandb.Api()
 
 
 def load_table(run, desired_table_name):
@@ -20,6 +19,7 @@ def load_table(run, desired_table_name):
 
 
 def get_runs_from_project(entity, project, filter_name = ''):
+    api = get_api()
     runs = api.runs(entity + "/" + project)
     #print("We got", len(runs), "total runs")
     
@@ -131,50 +131,3 @@ def make_plot_from_ids(ax, entity, evaluation_ids, config_names, dataset_names, 
 
     ax.set_ylabel("area under precision recall curve")
     return ax
-
-
-
-if False:
-    entity, project = "mlpayloads", "eval_paper_VAE_128small_RGB"  # set to your entity and project#
-    runs = get_runs_from_project(entity, project)
-
-    value = get_data_from_id(runs, wanted_id = "3a1cd21u")
-    print("!")
-
-    assert False
-
-
-    summary_list, config_list, name_list = [], [], []
-    for idx, run in enumerate(runs):
-        summary = run.summary._json_dict
-        if desired_table_name not in summary.keys():
-            continue
-
-        json_data = load_table(run, desired_table_name)
-
-        print(json_data)
-        print("----")
-        df = pd.DataFrame(data=json_data)
-
-        print(df)
-
-
-        summary_list.append(summary)
-
-        # .config contains the hyperparameters.
-        #  We remove special values that start with _.
-        config_list.append(
-            {k: v for k,v in run.config.items()
-             if not k.startswith('_')})
-
-        # .name is the human-readable name of the run.
-        name_list.append(run.name)
-
-
-    runs_df = pd.DataFrame({
-        "summary": summary_list,
-        "config": config_list,
-        "name": name_list
-        })
-
-    runs_df.to_csv("projects.csv")

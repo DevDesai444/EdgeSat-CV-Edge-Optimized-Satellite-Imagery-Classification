@@ -23,6 +23,6 @@ def array_processing_vis(t, clip_max=2000):
     return z
 
 def s2_to_rgb(model_input_rgb_npy):
-    # For inspiration we could see: https://github.com/spaceml-org/ml4floods/blob/f1cc17ef00a9748ed5ccc2e5206711d0ac023ffb/ml4floods/models/utils/uncertainty.py#L180
+    # Match the same clipping and scaling used by the repository's visualization helpers.
     model_input_rgb_npy = np.clip(model_input_rgb_npy / 3000., 0., 1.)
     return model_input_rgb_npy

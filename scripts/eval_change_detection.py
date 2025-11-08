@@ -1,11 +1,11 @@
 """
 Typical command:
 AE
-python3 -m scripts.eval_change_detection +training=simple_ae +dataset=preliminary_sequential_bigger_multiEval_Germany +module=simple_ae +project=vae_single_location +normalisation=log_scale +checkpoint=/home/vit.ruzicka/results/vae_fullgrid/ae3nhema/checkpoints/epoch_09-step_1481.ckpt +channels=rgb
+python3 -m scripts.eval_change_detection +training=simple_ae +dataset=preliminary_sequential_bigger_multiEval_Germany +module=simple_ae +project=vae_single_location +normalisation=log_scale +checkpoint=demo_assets/checkpoints/edgesat_pretrained_vae_128_small.ckpt +channels=rgb
 
 VAE
 (to try ...)
-python3 -m scripts.eval_change_detection +training=simple_vae +dataset=preliminary_sequential_bigger_multiEval_Germany +module=simple_vae +project=vae_single_location +normalisation=log_scale +checkpoint=/home/vit.ruzicka/branches/eval_branch/d8oflm4w/checkpoints/epoch_2949-step_2949.ckpt +channels=rgb
+python3 -m scripts.eval_change_detection +training=simple_vae +dataset=preliminary_sequential_bigger_multiEval_Germany +module=simple_vae +project=vae_single_location +normalisation=log_scale +checkpoint=demo_assets/checkpoints/edgesat_pretrained_vae_128_small.ckpt +channels=rgb
 
 
 """
@@ -17,6 +17,7 @@ import wandb
 import os 
 
 from src.data.datamodule import ParsedDataModule
+from src.data.staging import prepared_dataset_config
 from src.utils import load_obj, deepconvert
 from src.evaluation.evaluator import MetricEvaluator
 from src.evaluation.utils import wandb_init, save_as_georeferenced_tif, visualize_unnormalised, as_plot
@@ -26,6 +27,24 @@ from scipy.spatial import distance
 
 import numpy as np
 from pathlib import Path
+
+
+def resolve_device(cfg_train):
+    has_cuda = torch.cuda.is_available()
+    has_mps = getattr(torch.backends, 'mps', None) and torch.backends.mps.is_available()
+    gpus_cfg = cfg_train.get('gpus', 'auto')
+    if gpus_cfg == 'auto':
+        wants_acceleration = True
+    elif isinstance(gpus_cfg, str) and gpus_cfg.isdigit():
+        wants_acceleration = int(gpus_cfg) > 0
+    else:
+        wants_acceleration = gpus_cfg not in (None, 0, '0', False)
+
+    if wants_acceleration and has_cuda:
+        return torch.device('cuda')
+    if wants_acceleration and has_mps:
+        return torch.device('mps')
+    return torch.device('cpu')
 
 
 def process_batch(batch, nans_to_zeros=True):
@@ -86,70 +105,79 @@ def project_windows_to_image_noOverlap(windows_array, grid_shape):
     return image
 
 
-@hydra.main(config_path='../config', config_name='config.yaml')
+@hydra.main(version_base=None, config_path='../config', config_name='config.yaml')
 def main(cfg):
     # Load configs
     cfg = deepconvert(cfg)
 
-    # Load and setup the dataloaders
-    data_module = \
-        ParsedDataModule.load_or_create(cfg['dataset'], cfg['cache_dir'])
+    with prepared_dataset_config(cfg['dataset'], cfg['cache_dir']) as dataset_cfg:
+        cfg['dataset'] = dataset_cfg
 
-    if 'grx' not in cfg['module']['class']:  # VAE or AE
+        # Load and setup the dataloaders
+        data_module = \
+            ParsedDataModule.load_or_create(cfg['dataset'], cfg['cache_dir'])
 
-        cfg['module']['len_train_ds'] = data_module.len_train_ds
-        cfg['module']['len_val_ds'] = data_module.len_val_ds
-        cfg['module']['len_test_ds'] = data_module.len_test_ds
-        cfg['module']['input_shape'] = (3, 32, 32)  # data_module.sample_shape_train_ds[0]
+        if 'grx' not in cfg['module']['class']:  # VAE or AE
 
-        cfg_train = cfg['training']
-        cfg_module = cfg['module']
+            cfg['module']['len_train_ds'] = data_module.len_train_ds
+            cfg['module']['len_val_ds'] = data_module.len_val_ds
+            cfg['module']['len_test_ds'] = data_module.len_test_ds
+            cfg['module']['input_shape'] = (3, 32, 32)  # data_module.sample_shape_train_ds[0]
 
-        module = load_obj(cfg['module']['class'])(cfg_module, cfg_train)
+            cfg_train = cfg['training']
+            cfg_module = cfg['module']
 
-        checkpoint_root_path = Path(cfg['checkpoint']).parent.parent
-        hparams_path = checkpoint_root_path / 'hparams.yaml'
-        checkpoint_path = cfg['checkpoint']
+            module = load_obj(cfg['module']['class'])(cfg_module, cfg_train)
 
-        cfg['module']['init_weights'] = False
+            checkpoint_root_path = Path(cfg['checkpoint']).parent.parent
+            hparams_path = checkpoint_root_path / 'hparams.yaml'
+            checkpoint_path = cfg['checkpoint']
+            device = resolve_device(cfg_train)
 
-        print(f'Loading checkpoint {checkpoint_path}')
-        module = module.load_from_checkpoint(str(checkpoint_path),
-                                             hparams_file=str(hparams_path),
-                                             cfg=cfg_module,
-                                             train_cfg=cfg_train)
-        module = module.cuda().eval()
+            cfg['module']['init_weights'] = False
 
-    elif 'grx' in cfg['module']['class']:
-        module = load_obj(cfg['module']['class'])()
+            print(f'Loading checkpoint {checkpoint_path} on {device}')
+            load_kwargs = dict(
+                checkpoint_path=str(checkpoint_path),
+                cfg=cfg_module,
+                train_cfg=cfg_train,
+            )
+            if hparams_path.exists():
+                load_kwargs['hparams_file'] = str(hparams_path)
 
-        # Need to loop through all the data to train GRX before scoring in future loop
-        # Need to loop through twice to fit the mean and then the correlation matrix
-        for fitting in [module.partial_fit_mean, module.partial_fit_cov]:
-            for batch in tqdm(data_module.test_dataloader()):
-                inputs, _, _ = process_batch(batch, nans_to_zeros=False)
-                # reshaping: batch, channels, w, h -> channels, N
-                inputs = inputs.detach().cpu().numpy()
-                inputs = inputs.transpose((1, 0, 2, 3))
-                # NaNs need to be removed for GRX
-                inputs = inputs.reshape(inputs.shape[0], -1)
-                inputs = inputs[:, ~np.any(np.isnan(inputs), axis=0)]
-                fitting(inputs)
+            module = module.load_from_checkpoint(**load_kwargs)
+            module = module.to(device).eval()
 
-        print("'Trained' GRX with:")
-        module.report()
+        elif 'grx' in cfg['module']['class']:
+            module = load_obj(cfg['module']['class'])()
 
-        anomaly_function = grx_anomaly_function
-   
-    evaluator = MetricEvaluator()  # computes metrics
-    
-    # Save model weights in non-version specific mode:
-    print("Saving model weights into", checkpoint_root_path)
+            # Need to loop through all the data to train GRX before scoring in future loop
+            # Need to loop through twice to fit the mean and then the correlation matrix
+            for fitting in [module.partial_fit_mean, module.partial_fit_cov]:
+                for batch in tqdm(data_module.test_dataloader()):
+                    inputs, _, _ = process_batch(batch, nans_to_zeros=False)
+                    # reshaping: batch, channels, w, h -> channels, N
+                    inputs = inputs.detach().cpu().numpy()
+                    inputs = inputs.transpose((1, 0, 2, 3))
+                    # NaNs need to be removed for GRX
+                    inputs = inputs.reshape(inputs.shape[0], -1)
+                    inputs = inputs[:, ~np.any(np.isnan(inputs), axis=0)]
+                    fitting(inputs)
 
-    model_identifier = str(module.model.__class__.__module__).replace('src.models.','')
-    #torch.save(module.state_dict(), "model_"+model_identifier+".pt")
-    save_model_json(module.model, checkpoint_root_path / f"model_{model_identifier}_latent_{cfg_module['model_cls_args']['latent_dim']}.json")
-    exit(0)
+            print("'Trained' GRX with:")
+            module.report()
+
+            anomaly_function = grx_anomaly_function
+
+        evaluator = MetricEvaluator()  # computes metrics
+
+        # Save model weights in non-version specific mode:
+        print("Saving model weights into", checkpoint_root_path)
+
+        model_identifier = str(module.model.__class__.__module__).replace('src.models.','')
+        #torch.save(module.state_dict(), "model_"+model_identifier+".pt")
+        save_model_json(module.model, checkpoint_root_path / f"model_{model_identifier}_latent_{cfg_module['model_cls_args']['latent_dim']}.json")
+        exit(0)
     # Initializations for weights and biases:
     wandb_init(project_name="visualize_evaluation_v5_twin_vaes")
     # Visualizations table:
@@ -348,7 +376,7 @@ def main(cfg):
 
         # Save as GeoTIFF!
         save_geotif_path = "prediction_geotif_"+folder_name+".tif"  # will be in the hydra folder
-        # for example: /home/vit.ruzicka/branches/eval_branch/change-detection/outputs/<day>/<time>/
+        # for example: outputs/<day>/<time>/
         sample_input_tif_path = str(dataloader.dataset.dataset.datasets[0].tifs[-1]) # last tif
         save_as_georeferenced_tif(final_prediction, save_geotif_path, sample_input_tif_path)
 
@@ -386,5 +414,3 @@ def main(cfg):
 
 if __name__ == '__main__':
     main()
-
-

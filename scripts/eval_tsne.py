@@ -1,6 +1,6 @@
 """
 Typical command:
-python3 -m scripts.eval_tsne +training=simple_ae +dataset=preliminary_sequential_bigger_multiEval_Germany +module=simple_ae +project=vae_single_location +normalisation=log_scale +checkpoint=/home/vit.ruzicka/results/vae_fullgrid/ae3nhema/checkpoints/last.ckpt +channels=rgb
+python3 -m scripts.eval_tsne +training=simple_ae +dataset=preliminary_sequential_bigger_multiEval_Germany +module=simple_ae +project=vae_single_location +normalisation=log_scale +checkpoint=demo_assets/checkpoints/edgesat_pretrained_vae_128_small.ckpt +channels=rgb
 
 """
 
@@ -11,6 +11,7 @@ import torch
 import wandb
 
 from src.data.datamodule import ParsedDataModule
+from src.data.staging import prepared_dataset_config
 from src.utils import load_obj, deepconvert
 from src.evaluation.evaluator import MetricEvaluator
 from src.evaluation.anomaly_functions import vae_anomaly_function, grx_anomaly_function, vae_anomaly_function_with_latents
@@ -30,6 +31,24 @@ from PIL import Image, ImageDraw
 from PIL import Image, ImageOps
 import random
 
+
+def resolve_device(cfg_train):
+    has_cuda = torch.cuda.is_available()
+    has_mps = getattr(torch.backends, 'mps', None) and torch.backends.mps.is_available()
+    gpus_cfg = cfg_train.get('gpus', 'auto')
+    if gpus_cfg == 'auto':
+        wants_acceleration = True
+    elif isinstance(gpus_cfg, str) and gpus_cfg.isdigit():
+        wants_acceleration = int(gpus_cfg) > 0
+    else:
+        wants_acceleration = gpus_cfg not in (None, 0, '0', False)
+
+    if wants_acceleration and has_cuda:
+        return torch.device('cuda')
+    if wants_acceleration and has_mps:
+        return torch.device('mps')
+    return torch.device('cpu')
+
 def function_tsne(features, tsne_lr, tsne_perpexity):
     tsne = TSNE(n_components=2, learning_rate=tsne_lr, perplexity=tsne_perpexity, angle=0.2, verbose=2).fit_transform(features)
     print("tsne.shape",tsne.shape) # tsne.shape (255, 2)
@@ -46,7 +65,7 @@ def function_umap(features):
     return umap_vals
 
 def array_processing_vis(t, clip_max=2000):
-        # For inspiration we could see: https://github.com/spaceml-org/ml4floods/blob/f1cc17ef00a9748ed5ccc2e5206711d0ac023ffb/ml4floods/models/utils/uncertainty.py#L180
+        # This follows the same normalization idea used elsewhere in the repository.
 
         t = np.clip(t, np.nanmin(t), clip_max)
         t = (t - np.nanmin(t)) / np.nanmax(t) # between 0-1
@@ -140,7 +159,7 @@ def visualize_embedding(latents, images, optional_gts=None, optional_preds=None,
         tile = tile.resize((int(tile.width/rs), int(tile.height/rs)), Image.ANTIALIAS)
         full_image.paste(tile, (int((width-max_dim)*x), int((height-max_dim)*y)), mask=tile.convert('RGBA'))
 
-    #"/home/vit.ruzicka/branches/eval_branch/change-detection/tsne_plots/"
+    # Example output location: outputs/tsne_plots/
     full_image.save(name_prefix+"_"+method+"-all.png")
 
     # Also show as a 2D grid:
@@ -218,165 +237,175 @@ def tsne_as_2d_grid(embedding, images, optional_gts=None, optional_preds=None, n
         tile = tile.resize((tile_width, tile_height), Image.ANTIALIAS)
         grid_image.paste(tile, (int(x), int(y)))
 
-    #"/home/vit.ruzicka/branches/eval_branch/change-detection/tsne_plots/"+
+    # Example output location: outputs/tsne_plots/
     grid_image.save(name_prefix+"_"+method+"-grid.jpg")
 
 
-@hydra.main(config_path='../config', config_name='config.yaml')
+@hydra.main(version_base=None, config_path='../config', config_name='config.yaml')
 def main(cfg):
     # Load configs
     cfg = deepconvert(cfg)
 
-    # Load and setup the dataloaders
-    data_module = ParsedDataModule.load_or_create(cfg['dataset'], cfg['cache_dir'])
-    data_module.set_batch_sizes_and_n_workers(
-        cfg['training']['batch_size_train'],
-        cfg['training']['num_workers'],
-        cfg['training']['batch_size_valid'],
-        cfg['training']['num_workers'],
-        cfg['training']['batch_size_test'],
-        cfg['training']['num_workers']
-    )
+    with prepared_dataset_config(cfg['dataset'], cfg['cache_dir']) as dataset_cfg:
+        cfg['dataset'] = dataset_cfg
 
-    if 'grx' not in cfg['module']['class']: # VAE or AE
+        # Load and setup the dataloaders
+        data_module = ParsedDataModule.load_or_create(cfg['dataset'], cfg['cache_dir'])
+        data_module.set_batch_sizes_and_n_workers(
+            cfg['training']['batch_size_train'],
+            cfg['training']['num_workers'],
+            cfg['training']['batch_size_valid'],
+            cfg['training']['num_workers'],
+            cfg['training']['batch_size_test'],
+            cfg['training']['num_workers']
+        )
 
-        cfg['module']['len_train_ds'] = data_module.len_train_ds
-        cfg['module']['len_val_ds'] = data_module.len_val_ds
-        cfg['module']['len_test_ds'] = data_module.len_test_ds
-        cfg['module']['input_shape'] = (3, 32, 32) #data_module.sample_shape_train_ds[0]
+        if 'grx' not in cfg['module']['class']: # VAE or AE
 
-        cfg_train = cfg['training']
-        cfg_module = cfg['module']
+            cfg['module']['len_train_ds'] = data_module.len_train_ds
+            cfg['module']['len_val_ds'] = data_module.len_val_ds
+            cfg['module']['len_test_ds'] = data_module.len_test_ds
+            cfg['module']['input_shape'] = (3, 32, 32) #data_module.sample_shape_train_ds[0]
 
-        module = load_obj(cfg['module']['class'])(cfg_module, cfg_train)
+            cfg_train = cfg['training']
+            cfg_module = cfg['module']
 
-        checkpoint_root_path = Path(cfg['checkpoint']).parent.parent
-        hparams_path = checkpoint_root_path / 'hparams.yaml'
-        checkpoint_path = cfg['checkpoint']
+            module = load_obj(cfg['module']['class'])(cfg_module, cfg_train)
 
-        cfg['module']['init_weights'] = False
+            checkpoint_root_path = Path(cfg['checkpoint']).parent.parent
+            hparams_path = checkpoint_root_path / 'hparams.yaml'
+            checkpoint_path = cfg['checkpoint']
+            device = resolve_device(cfg_train)
 
-        print(f'Loading checkpoint {checkpoint_path}')
-        module = module.load_from_checkpoint(str(checkpoint_path),
-                                            hparams_file=str(hparams_path),
-                                            cfg=cfg_module, train_cfg=cfg_train)
-        module = module.cuda().eval()
+            cfg['module']['init_weights'] = False
+
+            print(f'Loading checkpoint {checkpoint_path} on {device}')
+            load_kwargs = dict(
+                checkpoint_path=str(checkpoint_path),
+                cfg=cfg_module,
+                train_cfg=cfg_train,
+            )
+            if hparams_path.exists():
+                load_kwargs['hparams_file'] = str(hparams_path)
+
+            module = module.load_from_checkpoint(**load_kwargs)
+            module = module.to(device).eval()
 
 
-    # Multiple datasets (each one is LocationDataset with single loaded folder):
-    if 'keep_separate' in cfg['dataset']['test'].keys() and cfg['dataset']['test']['keep_separate']:  # keep_separate: true
-        test_loader_list = data_module.test_dataloader()
-    else:
-        test_loader_list = [data_module.test_dataloader()]
+        # Multiple datasets (each one is LocationDataset with single loaded folder):
+        if 'keep_separate' in cfg['dataset']['test'].keys() and cfg['dataset']['test']['keep_separate']:  # keep_separate: true
+            test_loader_list = data_module.test_dataloader()
+        else:
+            test_loader_list = [data_module.test_dataloader()]
 
-    for dataloader_index, dataloader in enumerate(test_loader_list):
-        all_inputs_before = []
-        all_inputs_after = []
-        all_latents_before = []
-        all_latents_after = []
+        for dataloader_index, dataloader in enumerate(test_loader_list):
+            all_inputs_before = []
+            all_inputs_after = []
+            all_latents_before = []
+            all_latents_after = []
 
-        predicted_anomaly_scores = []
-        true_anomaly_fractions = []
+            predicted_anomaly_scores = []
+            true_anomaly_fractions = []
 
-        folder_name = str(dataloader.dataset.dataset.main_folder).split("/")[-1]
-        print("Evaluating on dataloader #", dataloader_index, ":", dataloader, "in folder", folder_name)
+            folder_name = str(dataloader.dataset.dataset.main_folder).split("/")[-1]
+            print("Evaluating on dataloader #", dataloader_index, ":", dataloader, "in folder", folder_name)
 
-        # Looping through windows in order:
-        for batch in tqdm(dataloader):
-            # labeled:
-            #   batch shape ~ 2 sequence, 3 inputs and change maps and unnormalized images, batch 32, ch 13, w h
-            # unlabeled:
-            #   batch shape ~ 2 sequence, 2 inputs and unnormalized images, batch 32, ch 13, w h
-            fake_labels = len(batch[0]) == 2 # we have only "inputs and unnormalized images"
+            # Looping through windows in order:
+            for batch in tqdm(dataloader):
+                # labeled:
+                #   batch shape ~ 2 sequence, 3 inputs and change maps and unnormalized images, batch 32, ch 13, w h
+                # unlabeled:
+                #   batch shape ~ 2 sequence, 2 inputs and unnormalized images, batch 32, ch 13, w h
+                fake_labels = len(batch[0]) == 2 # we have only "inputs and unnormalized images"
 
-            inputs_before, invalid_mask_before, _ = process_batch(batch[-2]) # before
-            inputs_after, invalid_mask_after, change_maps = process_batch(batch[-1]) # after
+                inputs_before, invalid_mask_before, _ = process_batch(batch[-2]) # before
+                inputs_after, invalid_mask_after, change_maps = process_batch(batch[-1]) # after
 
-            if fake_labels:
-                before_unnormalized = batch[-2][1] # second index points to normalized inputs, unnormalized inputs
-                after_unnormalized = batch[-1][1]
-            else:
-                before_unnormalized = batch[-2][2] # second index points to normalized inputs, gt, unnormalized inputs
-                after_unnormalized = batch[-1][2]
+                if fake_labels:
+                    before_unnormalized = batch[-2][1] # second index points to normalized inputs, unnormalized inputs
+                    after_unnormalized = batch[-1][1]
+                else:
+                    before_unnormalized = batch[-2][2] # second index points to normalized inputs, gt, unnormalized inputs
+                    after_unnormalized = batch[-1][2]
 
-            # These are numpy arrays
-            # Anomaly map is pixel wise (as image), anomaly score is window based (as a single number)
-            _, _, latents_before = vae_anomaly_function_with_latents(module, inputs_before, invalid_mask_before)
-            _, _, latents_after = vae_anomaly_function_with_latents(module, inputs_after, invalid_mask_after)
+                # These are numpy arrays
+                # Anomaly map is pixel wise (as image), anomaly score is window based (as a single number)
+                _, _, latents_before = vae_anomaly_function_with_latents(module, inputs_before, invalid_mask_before)
+                _, _, latents_after = vae_anomaly_function_with_latents(module, inputs_after, invalid_mask_after)
 
-            # For TSNE we care about:
-            # - latents
-            # - original images
+                # For TSNE we care about:
+                # - latents
+                # - original images
 
-            # Convert tile scores into map for visualization
-            anomaly_scores = []
-            for idx in range(len(latents_before)):
-                #difference_vector = latents_after[idx] - latents_before[idx]
-                #dst = distance.euclidean(latents_after[idx], latents_before[idx])
-                dst = distance.cosine(latents_after[idx], latents_before[idx])
-                anomaly_scores.append(dst)
+                # Convert tile scores into map for visualization
+                anomaly_scores = []
+                for idx in range(len(latents_before)):
+                    #difference_vector = latents_after[idx] - latents_before[idx]
+                    #dst = distance.euclidean(latents_after[idx], latents_before[idx])
+                    dst = distance.cosine(latents_after[idx], latents_before[idx])
+                    anomaly_scores.append(dst)
 
-            anomaly_scores = np.asarray(anomaly_scores)
-            predicted_anomaly_scores += [anomaly_scores]
+                anomaly_scores = np.asarray(anomaly_scores)
+                predicted_anomaly_scores += [anomaly_scores]
 
-            true_anomaly_fraction = (change_maps==1).mean(axis=tuple(n for n in range(1, len(change_maps.shape))))
-            true_anomaly_fractions += [true_anomaly_fraction]
+                true_anomaly_fraction = (change_maps==1).mean(axis=tuple(n for n in range(1, len(change_maps.shape))))
+                true_anomaly_fractions += [true_anomaly_fraction]
 
-            all_inputs_before += [before_unnormalized]
-            all_inputs_after += [after_unnormalized]
-            all_latents_before += [latents_before]
-            all_latents_after += [latents_after]
+                all_inputs_before += [before_unnormalized]
+                all_inputs_after += [after_unnormalized]
+                all_latents_before += [latents_before]
+                all_latents_after += [latents_after]
 
-        # TODO: The following few lines concatenating take quite a long time in this script.
-        # It would probably be better fill a numpy array than append to lists and then concat
+            # TODO: The following few lines concatenating take quite a long time in this script.
+            # It would probably be better fill a numpy array than append to lists and then concat
 
-        # Need to take care with input image to deal with variable input channels
-        channels = all_inputs_before[0].shape[1] # N, channels, w,h
-        assert channels in [3, 13]
-        if channels == 13:
-            # We have all 13 channels
-            all_inputs_rgb_before = np.concatenate(all_inputs_before)[:,[3,2,1]] # select rgb -> remember zero index
-            all_inputs_rgb_after = np.concatenate(all_inputs_after)[:,[3,2,1]] # select rgb -> remember zero index
-        elif channels==3:
-            # Or just R,G,B in order
-            all_inputs_rgb_before = np.concatenate(all_inputs_before)  #  assumes uses ['B4','B3','B2'] in this order
-            all_inputs_rgb_after = np.concatenate(all_inputs_after)  #  assumes uses ['B4','B3','B2'] in this order
+            # Need to take care with input image to deal with variable input channels
+            channels = all_inputs_before[0].shape[1] # N, channels, w,h
+            assert channels in [3, 13]
+            if channels == 13:
+                # We have all 13 channels
+                all_inputs_rgb_before = np.concatenate(all_inputs_before)[:,[3,2,1]] # select rgb -> remember zero index
+                all_inputs_rgb_after = np.concatenate(all_inputs_after)[:,[3,2,1]] # select rgb -> remember zero index
+            elif channels==3:
+                # Or just R,G,B in order
+                all_inputs_rgb_before = np.concatenate(all_inputs_before)  #  assumes uses ['B4','B3','B2'] in this order
+                all_inputs_rgb_after = np.concatenate(all_inputs_after)  #  assumes uses ['B4','B3','B2'] in this order
 
-        all_latents_before = np.concatenate(all_latents_before)
-        all_latents_after = np.concatenate(all_latents_after)
+            all_latents_before = np.concatenate(all_latents_before)
+            all_latents_after = np.concatenate(all_latents_after)
 
-        predicted_anomaly_scores = np.concatenate(predicted_anomaly_scores)
-        true_anomaly_fractions = np.concatenate(true_anomaly_fractions)
+            predicted_anomaly_scores = np.concatenate(predicted_anomaly_scores)
+            true_anomaly_fractions = np.concatenate(true_anomaly_fractions)
 
-        print("Images:")
-        print("all_inputs_rgb_before",all_inputs_rgb_before.shape)
-        print("all_inputs_rgb_after",all_inputs_rgb_after.shape)
-        print("Latents:")
-        print("all_latents_before",all_latents_before.shape)
-        print("all_latents_after",all_latents_after.shape)
-        print("Scores:")
-        print("predicted_anomaly_scores",predicted_anomaly_scores.shape) # We should threshold this to select only some of the samples ...
-        print("true_anomaly_fractions",true_anomaly_fractions.shape)
+            print("Images:")
+            print("all_inputs_rgb_before",all_inputs_rgb_before.shape)
+            print("all_inputs_rgb_after",all_inputs_rgb_after.shape)
+            print("Latents:")
+            print("all_latents_before",all_latents_before.shape)
+            print("all_latents_after",all_latents_after.shape)
+            print("Scores:")
+            print("predicted_anomaly_scores",predicted_anomaly_scores.shape) # We should threshold this to select only some of the samples ...
+            print("true_anomaly_fractions",true_anomaly_fractions.shape)
 
-        # Normalize in between 0-1 => then use threshold?
-        true_anomaly_fractions = (true_anomaly_fractions - np.min(true_anomaly_fractions))/np.ptp(true_anomaly_fractions)
-        predicted_anomaly_scores = (predicted_anomaly_scores - np.min(predicted_anomaly_scores))/np.ptp(predicted_anomaly_scores)
-        threshold_gt=np.mean(true_anomaly_fractions)
-        threshold_pred=np.mean(predicted_anomaly_scores)
-        print("We have normalized the prediction scores and are using thresholds of threshold_gt=",threshold_gt, "threshold_pred=",threshold_pred)
+            # Normalize in between 0-1 => then use threshold?
+            true_anomaly_fractions = (true_anomaly_fractions - np.min(true_anomaly_fractions))/np.ptp(true_anomaly_fractions)
+            predicted_anomaly_scores = (predicted_anomaly_scores - np.min(predicted_anomaly_scores))/np.ptp(predicted_anomaly_scores)
+            threshold_gt=np.mean(true_anomaly_fractions)
+            threshold_pred=np.mean(predicted_anomaly_scores)
+            print("We have normalized the prediction scores and are using thresholds of threshold_gt=",threshold_gt, "threshold_pred=",threshold_pred)
 
-        # To ignore predictions and labels, use:
-        true_anomaly_fractions, predicted_anomaly_scores=None, None
+            # To ignore predictions and labels, use:
+            true_anomaly_fractions, predicted_anomaly_scores=None, None
 
-        normalized_rgb = array_processing_vis(all_inputs_rgb_after.copy(), clip_max=2000)
-        visualize_embedding(all_latents_after, normalized_rgb, optional_gts=true_anomaly_fractions, optional_preds=predicted_anomaly_scores,
-                        threshold_gt=threshold_gt, threshold_pred=threshold_pred,
-                        method = "tsne",
-                        name_prefix=str(dataloader_index).zfill(2)+"_perp_"+str(30), tsne_perpexity=30) # 30 looks nice
-        visualize_embedding(all_latents_after, normalized_rgb, optional_gts=true_anomaly_fractions, optional_preds=predicted_anomaly_scores,
-                        threshold_gt=threshold_gt, threshold_pred=threshold_pred,
-                        method = "umap",
-                        name_prefix=str(dataloader_index).zfill(2))
+            normalized_rgb = array_processing_vis(all_inputs_rgb_after.copy(), clip_max=2000)
+            visualize_embedding(all_latents_after, normalized_rgb, optional_gts=true_anomaly_fractions, optional_preds=predicted_anomaly_scores,
+                            threshold_gt=threshold_gt, threshold_pred=threshold_pred,
+                            method = "tsne",
+                            name_prefix=str(dataloader_index).zfill(2)+"_perp_"+str(30), tsne_perpexity=30) # 30 looks nice
+            visualize_embedding(all_latents_after, normalized_rgb, optional_gts=true_anomaly_fractions, optional_preds=predicted_anomaly_scores,
+                            threshold_gt=threshold_gt, threshold_pred=threshold_pred,
+                            method = "umap",
+                            name_prefix=str(dataloader_index).zfill(2))
 
 
 if __name__ == '__main__':

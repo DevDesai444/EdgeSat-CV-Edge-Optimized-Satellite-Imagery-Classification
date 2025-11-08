@@ -1,6 +1,6 @@
 """
 Run with
-python3 -m scripts.gui_fewshot +training=simple_ae +dataset=samples_for_gui +module=simple_ae +project=gui +normalisation=log_scale +channels=rgb +checkpoint=/home/vitek/Vitek/python_codes/FDL21/gui_code/change-detection/epoch_09-step_1481.ckpt
+python3 -m scripts.gui_fewshot +training=simple_ae +dataset=samples_for_gui +module=simple_ae +project=gui +normalisation=log_scale +channels=rgb +checkpoint=demo_assets/checkpoints/edgesat_pretrained_vae_128_small.ckpt
  
 
 """
@@ -22,6 +22,7 @@ import wandb
 import os 
 
 from src.data.datamodule import ParsedDataModule
+from src.data.staging import prepared_dataset_config
 from src.utils import load_obj, deepconvert
 from src.evaluation.evaluator import MetricEvaluator
 from src.evaluation.utils import wandb_init, save_as_georeferenced_tif, visualize_unnormalised, as_plot
@@ -31,6 +32,24 @@ from scipy.spatial import distance
 
 import numpy as np
 from pathlib import Path
+
+
+def resolve_device(cfg_train):
+    has_cuda = torch.cuda.is_available()
+    has_mps = getattr(torch.backends, 'mps', None) and torch.backends.mps.is_available()
+    gpus_cfg = cfg_train.get('gpus', 'auto')
+    if gpus_cfg == 'auto':
+        wants_acceleration = True
+    elif isinstance(gpus_cfg, str) and gpus_cfg.isdigit():
+        wants_acceleration = int(gpus_cfg) > 0
+    else:
+        wants_acceleration = gpus_cfg not in (None, 0, '0', False)
+
+    if wants_acceleration and has_cuda:
+        return torch.device('cuda')
+    if wants_acceleration and has_mps:
+        return torch.device('mps')
+    return torch.device('cpu')
 
 def process_batch(inputs, nans_to_zeros=True):
     """Batch """
@@ -133,340 +152,347 @@ def load_data_from_dataloader(dataloader,module,overlap):
     return final_image_unnormalized, final_image_processed, all_latents, index2positions
 
 
-@hydra.main(config_path='../config', config_name='config.yaml') # pip install hydra-core==1.1.0 omegaconf==2.1.0
+@hydra.main(version_base=None, config_path='../config', config_name='config.yaml') # pip install hydra-core==1.1.0 omegaconf==2.1.0
 def main(cfg):
     # Load configs
     cfg = deepconvert(cfg)
 
-    # Load and setup the dataloaders
-    data_module = \
-        ParsedDataModule.load_or_create(cfg['dataset'], cfg['cache_dir'])
+    with prepared_dataset_config(cfg['dataset'], cfg['cache_dir']) as dataset_cfg:
+        cfg['dataset'] = dataset_cfg
 
-    if True:
-        cfg['module']['len_train_ds'] = data_module.len_train_ds
-        cfg['module']['len_val_ds'] = data_module.len_val_ds
-        cfg['module']['len_test_ds'] = data_module.len_test_ds
-        cfg['module']['input_shape'] = (3, 32, 32)  # data_module.sample_shape_train_ds[0]
+        # Load and setup the dataloaders
+        data_module = \
+            ParsedDataModule.load_or_create(cfg['dataset'], cfg['cache_dir'])
 
-        cfg_train = cfg['training']
-        cfg_module = cfg['module']
+        if True:
+            cfg['module']['len_train_ds'] = data_module.len_train_ds
+            cfg['module']['len_val_ds'] = data_module.len_val_ds
+            cfg['module']['len_test_ds'] = data_module.len_test_ds
+            cfg['module']['input_shape'] = (3, 32, 32)  # data_module.sample_shape_train_ds[0]
 
-        module = load_obj(cfg['module']['class'])(cfg_module, cfg_train)
+            cfg_train = cfg['training']
+            cfg_module = cfg['module']
 
-        checkpoint_root_path = Path(cfg['checkpoint']).parent.parent
-        hparams_path = checkpoint_root_path / 'hparams.yaml'
-        checkpoint_path = cfg['checkpoint']
+            module = load_obj(cfg['module']['class'])(cfg_module, cfg_train)
 
-        cfg['module']['init_weights'] = False
+            checkpoint_root_path = Path(cfg['checkpoint']).parent.parent
+            hparams_path = checkpoint_root_path / 'hparams.yaml'
+            checkpoint_path = cfg['checkpoint']
+            device = resolve_device(cfg_train)
 
-        print(f'Loading checkpoint {checkpoint_path}')
-        module = module.load_from_checkpoint(str(checkpoint_path),
-                                             hparams_file=str(hparams_path),
-                                             cfg=cfg_module,
-                                             train_cfg=cfg_train)
-        module = module.cuda().eval()
+            cfg['module']['init_weights'] = False
 
-    print("Current folder:", os.getcwd())
+            print(f'Loading checkpoint {checkpoint_path} on {device}')
+            load_kwargs = dict(
+                checkpoint_path=str(checkpoint_path),
+                cfg=cfg_module,
+                train_cfg=cfg_train,
+            )
+            if hparams_path.exists():
+                load_kwargs['hparams_file'] = str(hparams_path)
 
-    model_identifier = str(module.model.__class__.__module__).replace('src.models.','')
-    
-    
-    # Multiple datasets (each one is LocationDataset):
-    val_loader_list = data_module.val_dataloader()
-    if isinstance(val_loader_list, list):
-        pass
-    else:
-        val_loader_list = [val_loader_list]
-    test_loader_list = data_module.test_dataloader()
-    if isinstance(test_loader_list, list):
-        pass
-    else:
-        test_loader_list = [test_loader_list]
+            module = module.load_from_checkpoint(**load_kwargs)
+            module = module.to(device).eval()
 
-    for dataloader_index, dataloader in enumerate(test_loader_list):
-        # Test serves as the eval image
-        folder_name = dataloader.dataset.dataset.main_folder.stem
-        print(f'Test Dataloader {dataloader_index} in {folder_name}')
-        overlap = cfg['dataset']['test']['dataset_cls_args']['dataset_cls_args']['tiling_strategy_args']['overlap'][0]
-        eval_raw, eval_processed, eval_latents, eval_index2positions = load_data_from_dataloader(dataloader, module, overlap)
-    
-    for dataloader_index, dataloader in enumerate(val_loader_list):
-        # Val serves as the support image
-        folder_name = dataloader.dataset.dataset.main_folder.stem
-        print(f'Val Dataloader {dataloader_index} in {folder_name}')
-        overlap = cfg['dataset']['valid']['dataset_cls_args']['dataset_cls_args']['tiling_strategy_args']['overlap'][0]
-        support_raw, support_processed, support_latents, support_index2positions = load_data_from_dataloader(dataloader, module, overlap)
+        print("Current folder:", os.getcwd())
 
-    # HAX on the same image?
-    #eval_raw, eval_processed, eval_latents, eval_index2positions = support_raw, support_processed, support_latents, support_index2positions
-
-    #######
-
-    events = [i for i in dir(cv2) if 'EVENT' in i]
-    print(events)
-
-    class PainterHandler:
-        def __init__(self, eval_raw, eval_processed, eval_latents, eval_index2positions, img_use, k_closest=4):
-            self.eval_raw = eval_raw
-            self.eval_processed = eval_processed
-            self.img_use = img_use
-            self.h, self.w, self.ch = self.eval_processed.shape
-            self.eval_latents = eval_latents
-            self.eval_index2positions = eval_index2positions
-
-            self.k_closest = k_closest
-
-            self.image_cv2 = None
-            self.reset()
-
-        def reset(self):
-            eval_img = cv2.UMat(self.img_use) # Convert into CV2 format
-            self.image_cv2 = eval_img
-
-        def highlight_from_mean_latent(self, mean_latent):
-            self.reset()
-            mean_latents = np.repeat(np.expand_dims(mean_latent,0), len(self.eval_latents), 0)
-            print("mean_latents.shape", mean_latents.shape, "self.eval_latents.shape", self.eval_latents.shape)
-            
-            distances = []
-            indices = []
-            for idx in range(len(self.eval_latents)):
-                dst = distance.cosine(mean_latents[idx], self.eval_latents[idx])
-                distances.append(dst)
-                indices.append(idx)
-            distances = np.asarray(distances)
-
-            print("distances.shape = ", distances.shape)
-            print("min, max = ", np.min(distances), np.max(distances))
-
-            # Now highlight the nearest k=10 tiles ...
-            distances_sorted, indices_sorted = zip(*sorted(zip(distances, indices)))
-            for i in range(self.k_closest):
-                print("selected idx", indices_sorted[i], "with distance", distances_sorted[i])
-                position = self.eval_index2positions[indices_sorted[i]]
-
-                thickness_multiplier = int(self.k_closest - i)
-                self.highlight_one(position, thickness_multiplier, i)
+        model_identifier = str(module.model.__class__.__module__).replace('src.models.','')
 
 
-        def highlight_one(self, position, thickness_multiplier, order):
-            # position has numpy coordinates ~ image[:, i*w:(i+1)*w, j*w:(j+1)*w]  ~  [32, 64, 256, 288]
-            # while x,y in cv2 are swapped
-            y0, y1, x0, x1 = position
+        # Multiple datasets (each one is LocationDataset):
+        val_loader_list = data_module.val_dataloader()
+        if isinstance(val_loader_list, list):
+            pass
+        else:
+            val_loader_list = [val_loader_list]
+        test_loader_list = data_module.test_dataloader()
+        if isinstance(test_loader_list, list):
+            pass
+        else:
+            test_loader_list = [test_loader_list]
 
-            font = cv2.FONT_HERSHEY_SIMPLEX
-            cv2.putText(self.image_cv2, str(order), (x0,y0), font, 0.6, (255,255,0), 1)
-            cv2.rectangle(self.image_cv2, (x0,y0), (x1,y1), color=(0,255,255), thickness=thickness_multiplier)
+        for dataloader_index, dataloader in enumerate(test_loader_list):
+            # Test serves as the eval image
+            folder_name = dataloader.dataset.dataset.main_folder.stem
+            print(f'Test Dataloader {dataloader_index} in {folder_name}')
+            overlap = cfg['dataset']['test']['dataset_cls_args']['dataset_cls_args']['tiling_strategy_args']['overlap'][0]
+            eval_raw, eval_processed, eval_latents, eval_index2positions = load_data_from_dataloader(dataloader, module, overlap)
+
+        for dataloader_index, dataloader in enumerate(val_loader_list):
+            # Val serves as the support image
+            folder_name = dataloader.dataset.dataset.main_folder.stem
+            print(f'Val Dataloader {dataloader_index} in {folder_name}')
+            overlap = cfg['dataset']['valid']['dataset_cls_args']['dataset_cls_args']['tiling_strategy_args']['overlap'][0]
+            support_raw, support_processed, support_latents, support_index2positions = load_data_from_dataloader(dataloader, module, overlap)
+
+        # HAX on the same image?
+        #eval_raw, eval_processed, eval_latents, eval_index2positions = support_raw, support_processed, support_latents, support_index2positions
+
+        #######
+
+        events = [i for i in dir(cv2) if 'EVENT' in i]
+        print(events)
+
+        class PainterHandler:
+            def __init__(self, eval_raw, eval_processed, eval_latents, eval_index2positions, img_use, k_closest=4):
+                self.eval_raw = eval_raw
+                self.eval_processed = eval_processed
+                self.img_use = img_use
+                self.h, self.w, self.ch = self.eval_processed.shape
+                self.eval_latents = eval_latents
+                self.eval_index2positions = eval_index2positions
+
+                self.k_closest = k_closest
+
+                self.image_cv2 = None
+                self.reset()
+
+            def reset(self):
+                eval_img = cv2.UMat(self.img_use) # Convert into CV2 format
+                self.image_cv2 = eval_img
+
+            def highlight_from_mean_latent(self, mean_latent):
+                self.reset()
+                mean_latents = np.repeat(np.expand_dims(mean_latent,0), len(self.eval_latents), 0)
+                print("mean_latents.shape", mean_latents.shape, "self.eval_latents.shape", self.eval_latents.shape)
+
+                distances = []
+                indices = []
+                for idx in range(len(self.eval_latents)):
+                    dst = distance.cosine(mean_latents[idx], self.eval_latents[idx])
+                    distances.append(dst)
+                    indices.append(idx)
+                distances = np.asarray(distances)
+
+                print("distances.shape = ", distances.shape)
+                print("min, max = ", np.min(distances), np.max(distances))
+
+                # Now highlight the nearest k=10 tiles ...
+                distances_sorted, indices_sorted = zip(*sorted(zip(distances, indices)))
+                for i in range(self.k_closest):
+                    print("selected idx", indices_sorted[i], "with distance", distances_sorted[i])
+                    position = self.eval_index2positions[indices_sorted[i]]
+
+                    thickness_multiplier = int(self.k_closest - i)
+                    self.highlight_one(position, thickness_multiplier, i)
 
 
-    class ClickerHandler:
-        def __init__(self, support_raw, support_processed, support_latents, support_index2positions, model, painter, support_img):
-            self.tiles = []
-            self.latents = []
-            self.centers = []
-            self.clicked_i = 0
-            self.tile_size = 32
-            
-            self.support_raw = support_raw
-            self.support_processed = support_processed
-            self.support_latents = support_latents
-            self.support_index2positions = support_index2positions
+            def highlight_one(self, position, thickness_multiplier, order):
+                # position has numpy coordinates ~ image[:, i*w:(i+1)*w, j*w:(j+1)*w]  ~  [32, 64, 256, 288]
+                # while x,y in cv2 are swapped
+                y0, y1, x0, x1 = position
 
-            self.model = model
-            self.img = support_img
-
-            self.painter = painter
-
-            self.mode = 'exact_click'
-            self.mode = 'nearest_tile'
-
-        def reset(self, support_img):
-            self.tiles = []
-            self.latents = []
-            self.centers = []
-            self.clicked_i = 0
-            self.img = support_img
-
-        def click_event(self,event,x,y,flags,param):
-            img = self.img
-            font = cv2.FONT_HERSHEY_SIMPLEX
-
-            if event == cv2.EVENT_LBUTTONDOWN:
-                # Left click -> draw a square!
-                #print(x,",",y)
-                self.centers.append([x,y])
-                
-                strXY = str(x)+", "+str(y)
-                fontScale = 0.6
-                cv2.putText(img, strXY, (x,y), font, fontScale, (255,255,0), 1)
-
-                if self.mode == 'exact_click':
-                    x0 = x - int(self.tile_size/2)
-                    x1 = x + int(self.tile_size/2)
-                    y0 = y - int(self.tile_size/2)
-                    y1 = y + int(self.tile_size/2)
-                    if x0 < 0 or x1 < 0 or y0 < 0 or y1 < 0:
-                        return None # out of bounds ...
-
-                    cv2.rectangle(img, (x0,y0), (x1,y1), color=(0,255,255), thickness=1)
-
-                    # Version 1, sample tile from the clicked area:
-                    tile = self.get_tile(x0,y0,x1,y1)
-                    latent = self.tile2latent(tile)
-                    #self.tiles.append(tile) # add into list of tiles
-                    self.latents.append(latent)
-                elif self.mode == 'nearest_tile':
-                    # Version 2, load the latent from computations:
-                    corresponding_index = self.get_position_index(x,y)
-                    latent = self.support_latents[corresponding_index]
-                    #print("latent ~ ", latent)
-                    self.latents.append(latent)
-
-                    y0, y1, x0, x1 = self.support_index2positions[corresponding_index]
-                    #print("targetted ~ ", y0, y1, x0, x1)
-                    cv2.rectangle(img, (x0,y0), (x1,y1), color=(0,255,255), thickness=1)
+                font = cv2.FONT_HERSHEY_SIMPLEX
+                cv2.putText(self.image_cv2, str(order), (x0,y0), font, 0.6, (255,255,0), 1)
+                cv2.rectangle(self.image_cv2, (x0,y0), (x1,y1), color=(0,255,255), thickness=thickness_multiplier)
 
 
-                # indexing directly into the picture:
-                #print("clicked at:", y,x)
+        class ClickerHandler:
+            def __init__(self, support_raw, support_processed, support_latents, support_index2positions, model, painter, support_img):
+                self.tiles = []
+                self.latents = []
+                self.centers = []
+                self.clicked_i = 0
+                self.tile_size = 32
 
-                self.final_update()
-                # Next one please ...
-                self.clicked_i += 1
+                self.support_raw = support_raw
+                self.support_processed = support_processed
+                self.support_latents = support_latents
+                self.support_index2positions = support_index2positions
 
-        def show_debug(self, tile):
-            cv2.namedWindow('debug')
-            img = cv2.UMat(tile)
-            cv2.imshow("debug", img)
+                self.model = model
+                self.img = support_img
 
-        def get_tile(self, x0,y0,x1,y1):
-            tile = self.support_processed[y0:y1,x0:x1,:]
-            #self.show_debug(tile)
-            #print("From", x0,y0,x1,y1, "tile.shape", tile.shape)
-            return tile
+                self.painter = painter
 
-        def tile2latent(self,tile):
-            tile = torch.tensor(np.moveaxis(tile, -1, 0)).unsqueeze(0)
-            latent = vae_anomaly_only_latents(self.model, tile, latents_keep_tensors=False)[0]
-            return latent
+                self.mode = 'exact_click'
+                self.mode = 'nearest_tile'
 
-        def get_position_index(self, x,y):
-            # position has numpy coordinates ~ image[:, i*w:(i+1)*w, j*w:(j+1)*w]  ~  [32, 64, 256, 288]
-            #                                  image[:, x0:x1, y0:y1]
-            # while x,y in cv2 are swapped
-            x, y = y, x
+            def reset(self, support_img):
+                self.tiles = []
+                self.latents = []
+                self.centers = []
+                self.clicked_i = 0
+                self.img = support_img
 
-            def point_in_1d(x,y,a):
-                if a >= x and a <= y:
-                    return True
-                return False
+            def click_event(self,event,x,y,flags,param):
+                img = self.img
+                font = cv2.FONT_HERSHEY_SIMPLEX
 
-            self.support_index2positions
-            for k in self.support_index2positions.keys():
-                #position ~~ self.support_index2positions[k]
-                x0,x1,y0,y1 = self.support_index2positions[k]
+                if event == cv2.EVENT_LBUTTONDOWN:
+                    # Left click -> draw a square!
+                    #print(x,",",y)
+                    self.centers.append([x,y])
 
-                overlaps = point_in_1d(x0,x1,x) and point_in_1d(y0,y1,y)
-                if overlaps:
-                    print("key", k, "overlaps!")
-                    break
+                    strXY = str(x)+", "+str(y)
+                    fontScale = 0.6
+                    cv2.putText(img, strXY, (x,y), font, fontScale, (255,255,0), 1)
 
-            return k
+                    if self.mode == 'exact_click':
+                        x0 = x - int(self.tile_size/2)
+                        x1 = x + int(self.tile_size/2)
+                        y0 = y - int(self.tile_size/2)
+                        y1 = y + int(self.tile_size/2)
+                        if x0 < 0 or x1 < 0 or y0 < 0 or y1 < 0:
+                            return None # out of bounds ...
 
-        def final_update(self):
-            # Final update after a click
-            # Embed all tiles!
-            latents = self.latents.copy()
-            """
-            for tile_i, tile in enumerate(self.tiles):
-                # Tile (np) to latent
-                #print("tile as np", tile_i, tile.shape)
+                        cv2.rectangle(img, (x0,y0), (x1,y1), color=(0,255,255), thickness=1)
+
+                        # Version 1, sample tile from the clicked area:
+                        tile = self.get_tile(x0,y0,x1,y1)
+                        latent = self.tile2latent(tile)
+                        #self.tiles.append(tile) # add into list of tiles
+                        self.latents.append(latent)
+                    elif self.mode == 'nearest_tile':
+                        # Version 2, load the latent from computations:
+                        corresponding_index = self.get_position_index(x,y)
+                        latent = self.support_latents[corresponding_index]
+                        #print("latent ~ ", latent)
+                        self.latents.append(latent)
+
+                        y0, y1, x0, x1 = self.support_index2positions[corresponding_index]
+                        #print("targetted ~ ", y0, y1, x0, x1)
+                        cv2.rectangle(img, (x0,y0), (x1,y1), color=(0,255,255), thickness=1)
+
+
+                    # indexing directly into the picture:
+                    #print("clicked at:", y,x)
+
+                    self.final_update()
+                    # Next one please ...
+                    self.clicked_i += 1
+
+            def show_debug(self, tile):
+                cv2.namedWindow('debug')
+                img = cv2.UMat(tile)
+                cv2.imshow("debug", img)
+
+            def get_tile(self, x0,y0,x1,y1):
+                tile = self.support_processed[y0:y1,x0:x1,:]
+                #self.show_debug(tile)
+                #print("From", x0,y0,x1,y1, "tile.shape", tile.shape)
+                return tile
+
+            def tile2latent(self,tile):
                 tile = torch.tensor(np.moveaxis(tile, -1, 0)).unsqueeze(0)
-                #print("tile as torch", tile_i, tile.shape)
                 latent = vae_anomaly_only_latents(self.model, tile, latents_keep_tensors=False)[0]
-                #print(latent.shape, latent)
+                return latent
 
-                latents.append(latent)
-            """
+            def get_position_index(self, x,y):
+                # position has numpy coordinates ~ image[:, i*w:(i+1)*w, j*w:(j+1)*w]  ~  [32, 64, 256, 288]
+                #                                  image[:, x0:x1, y0:y1]
+                # while x,y in cv2 are swapped
+                x, y = y, x
 
-            # Get the mean vector:
-            latents = np.asarray(latents)
-            #print("all latents ~", latents.shape)
+                def point_in_1d(x,y,a):
+                    if a >= x and a <= y:
+                        return True
+                    return False
 
-            mean_latent = np.mean(latents, 0)
-            print("Mean latent ~", mean_latent, "from", latents.shape)
-            self.painter.highlight_from_mean_latent(mean_latent)
+                self.support_index2positions
+                for k in self.support_index2positions.keys():
+                    #position ~~ self.support_index2positions[k]
+                    x0,x1,y0,y1 = self.support_index2positions[k]
 
-    
-    #cv2.namedWindow('image', cv2.WINDOW_NORMAL) # < Windows scaling ON
-    cv2.namedWindow('support_img')
-    cv2.namedWindow('eval_img')
+                    overlaps = point_in_1d(x0,x1,x) and point_in_1d(y0,y1,y)
+                    if overlaps:
+                        print("key", k, "overlaps!")
+                        break
 
-    ############################
-    support_processed = np.moveaxis(support_processed, 0, -1)
-    support_raw = np.moveaxis(support_raw, 0, -1)
-    eval_processed = np.moveaxis(eval_processed, 0, -1)
-    eval_raw = np.moveaxis(eval_raw, 0, -1)
+                return k
 
-    # Log normalised
-    support_use = support_processed
-    eval_use = eval_processed
+            def final_update(self):
+                # Final update after a click
+                # Embed all tiles!
+                latents = self.latents.copy()
+                """
+                for tile_i, tile in enumerate(self.tiles):
+                    # Tile (np) to latent
+                    #print("tile as np", tile_i, tile.shape)
+                    tile = torch.tensor(np.moveaxis(tile, -1, 0)).unsqueeze(0)
+                    #print("tile as torch", tile_i, tile.shape)
+                    latent = vae_anomaly_only_latents(self.model, tile, latents_keep_tensors=False)[0]
+                    #print(latent.shape, latent)
 
-    # Or raw
-    support_use = s2_to_rgb(support_raw)
-    eval_use = s2_to_rgb(eval_raw)
-    ###############################
+                    latents.append(latent)
+                """
 
-    support_img = cv2.UMat(support_use) # Convert into CV2 format
-    eval_img = cv2.UMat(eval_use) # Convert into CV2 format
-    
-    painter = PainterHandler(eval_raw, eval_processed, eval_latents, eval_index2positions, eval_use)
-    clicker_storage = ClickerHandler(support_raw, support_processed, support_latents, support_index2positions, module, painter, support_img)
+                # Get the mean vector:
+                latents = np.asarray(latents)
+                #print("all latents ~", latents.shape)
 
-    cv2.setMouseCallback('support_img',clicker_storage.click_event)
+                mean_latent = np.mean(latents, 0)
+                print("Mean latent ~", mean_latent, "from", latents.shape)
+                self.painter.highlight_from_mean_latent(mean_latent)
 
-    normalisation_flag = True
-    while True:
-        # display the image and wait for a keypress
-        eval_img = painter.image_cv2
-        cv2.imshow("support_img", support_img)
-        cv2.imshow("eval_img", eval_img)
-        key = cv2.waitKey(1) & 0xFF
 
-        if key == ord("c"):
-            print("Clearing selection:")
+        #cv2.namedWindow('image', cv2.WINDOW_NORMAL) # < Windows scaling ON
+        cv2.namedWindow('support_img')
+        cv2.namedWindow('eval_img')
 
-            # Clear images:
-            support_img = cv2.UMat(support_use) # Convert into CV2 format
-            clicker_storage.reset(support_img)
-            painter.reset()
+        ############################
+        support_processed = np.moveaxis(support_processed, 0, -1)
+        support_raw = np.moveaxis(support_raw, 0, -1)
+        eval_processed = np.moveaxis(eval_processed, 0, -1)
+        eval_raw = np.moveaxis(eval_raw, 0, -1)
 
-        if key == ord("p"):
-            print("Running debug:")
-            import pdb; pdb.set_trace()            
-            
-        if key == ord("-") or key == ord("_"):
-            # Less hits
-            painter.k_closest -= 1
-            if painter.k_closest == 0: painter.k_closest = 1
+        # Log normalised
+        support_use = support_processed
+        eval_use = eval_processed
 
-        if key == ord("+") or key == ord("="):
-            # More hits
-            painter.k_closest += 1
-            
-        if key == ord("q"):
-            break
+        # Or raw
+        support_use = s2_to_rgb(support_raw)
+        eval_use = s2_to_rgb(eval_raw)
+        ###############################
 
-    cv2.destroyAllWindows()
+        support_img = cv2.UMat(support_use) # Convert into CV2 format
+        eval_img = cv2.UMat(eval_use) # Convert into CV2 format
 
-    print("Selected Coordinates: ")
-    for i in clicker_storage.centers:
-        print(i)
+        painter = PainterHandler(eval_raw, eval_processed, eval_latents, eval_index2positions, eval_use)
+        clicker_storage = ClickerHandler(support_raw, support_processed, support_latents, support_index2positions, module, painter, support_img)
+
+        cv2.setMouseCallback('support_img',clicker_storage.click_event)
+
+        normalisation_flag = True
+        while True:
+            # display the image and wait for a keypress
+            eval_img = painter.image_cv2
+            cv2.imshow("support_img", support_img)
+            cv2.imshow("eval_img", eval_img)
+            key = cv2.waitKey(1) & 0xFF
+
+            if key == ord("c"):
+                print("Clearing selection:")
+
+                # Clear images:
+                support_img = cv2.UMat(support_use) # Convert into CV2 format
+                clicker_storage.reset(support_img)
+                painter.reset()
+
+            if key == ord("p"):
+                print("Running debug:")
+                import pdb; pdb.set_trace()
+
+            if key == ord("-") or key == ord("_"):
+                # Less hits
+                painter.k_closest -= 1
+                if painter.k_closest == 0: painter.k_closest = 1
+
+            if key == ord("+") or key == ord("="):
+                # More hits
+                painter.k_closest += 1
+
+            if key == ord("q"):
+                break
+
+        cv2.destroyAllWindows()
+
+        print("Selected Coordinates: ")
+        for i in clicker_storage.centers:
+            print(i)
 
 
 
 
 if __name__ == '__main__':
     main()
-
-

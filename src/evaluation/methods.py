@@ -6,6 +6,14 @@ import numpy as np
 from sklearn.metrics import precision_recall_curve, auc
 
 
+def _runtime_device():
+    if torch.cuda.is_available():
+        return torch.device('cuda')
+    if getattr(torch.backends, 'mps', None) and torch.backends.mps.is_available():
+        return torch.device('mps')
+    return torch.device('cpu')
+
+
 def predictions2image(predictions, grid_shape, tile_size):
     # Converts predicitons array into an numpy array image
     channels = 1
@@ -114,8 +122,9 @@ class DiffPixels(ImageMethodBase):
         if data_win.shape[0] == 0:
             return torch.zeros(1, 1, 1)
 
-        data_win = data_win[-self.memory_size:].cuda()
-        data_now = data_now[0].cuda()
+        device = _runtime_device()
+        data_win = data_win[-self.memory_size:].to(device)
+        data_now = data_now[0].to(device)
 
         res = torch.cat([torch.linalg.norm(data_now - dw, dim=0)[None, ] for dw in data_win])
         res = res.min(0)[0]
@@ -132,8 +141,9 @@ class CosPixels(ImageMethodBase):
         if data_win.shape[0] < self.memory_size:
             return torch.zeros(1, 1, 1)
 
-        data_win = data_win[-self.memory_size:].cuda()
-        data_now = data_now[0].cuda()
+        device = _runtime_device()
+        data_win = data_win[-self.memory_size:].to(device)
+        data_now = data_now[0].to(device)
 
         res = torch.cat([cosine_similarity(data_now, dw, 0)[None, ] for dw in data_win])
         res = res.max(0)[0]
@@ -156,8 +166,9 @@ class CosEmbeddingImage(ImageMethodBase):
             embs_now = embs_now[:, :embs_now.shape[1]//2]
             embs_win = embs_win[:, :embs_win.shape[1]//2]
 
-        embs_win = embs_win[-self.memory_size:].cuda()
-        embs_now = embs_now[0].cuda()
+        device = _runtime_device()
+        embs_win = embs_win[-self.memory_size:].to(device)
+        embs_now = embs_now[0].to(device)
 
         res = torch.cat([cosine_similarity(embs_now, ew, 0)[None, ] for ew in embs_win])
         res = res.max(0)[0]
@@ -181,8 +192,9 @@ class DiffEmbeddingImage(ImageMethodBase):
             embs_now = embs_now[:, :embs_now.shape[1]//2]
             embs_win = embs_win[:, :embs_win.shape[1]//2]
 
-        embs_win = embs_win[-self.memory_size:].cuda()
-        embs_now = embs_now[0].cuda()
+        device = _runtime_device()
+        embs_win = embs_win[-self.memory_size:].to(device)
+        embs_now = embs_now[0].to(device)
 
         res = torch.cat([torch.linalg.norm(embs_now - ew, dim=0)[None, ] for ew in embs_win])
         res = res.min(0)[0]
