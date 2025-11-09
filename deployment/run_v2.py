@@ -51,7 +51,7 @@ def main():
 
     #model.load_state_dict(state_dict)
     model.eval()
-    #model.eval().cuda() # < to put it all on GPU
+    # To force GPU manually, move the model to the selected runtime device here.
     print("Loaded model:", model)
 
     device = which_device(model)
@@ -129,4 +129,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-

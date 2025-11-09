@@ -1,11 +1,10 @@
 # Environment:
-conda create -n fdl_deploy python=3.6
-conda activate fdl_deploy
+conda create -n edgesat_deploy python=3.6
+conda activate edgesat_deploy
 
 # Code:
-git clone git@gitlab.com:frontierdevelopmentlab/fdl-europe-2021-ml-payload/change-detection.git
-cd change-detection
-git checkout vae_evaluation
+# clone the EdgeSat-CV repository from the remote you plan to deploy
+# then change into the checked-out repository directory
 
 # Libraries:
 pip install numpy==1.16.4
