@@ -6,9 +6,7 @@ Edge-optimized remote sensing pipeline for unsupervised satellite change detecti
 
 Project owner and creator of this repository version: `DevDesai-444`
 
-This repository packages a full computer vision workflow for multi-band satellite imagery. In practice, it is not a conventional image classification project even though the repository name mentions classification. The implemented system is primarily an unsupervised change-detection and anomaly-detection stack built around autoencoders, variational autoencoders, temporal comparison, and edge-aware deployment constraints.
-
-The codebase still contains some legacy `RaVAEn` and `change-detection` identifiers in file names, configs, and notebook text. This README describes what the repository actually does today at the code level.
+This repository packages a full computer vision workflow for multi-band satellite imagery. In practice, it is not a conventional image classification project even though the repository name mentions classification. The implemented system is primarily an unsupervised change detection and anomaly detection stack built around autoencoders, variational autoencoders, temporal comparison, and edge-aware deployment constraints.
 
 ## Full Project Description
 
@@ -93,8 +91,8 @@ flowchart TD
 | `scripts/` | Training, evaluation, t-SNE/UMAP analysis, datamodule inspection, and few-shot GUI entrypoints. |
 | `deployment/` | Minimal model definitions and runners intended for lightweight or older hardware environments. |
 | `docs/` | Short project notes on environment setup, datasets, config use, and training/evaluation. |
-| `notebooks/` | Demonstration notebooks for data exploration, training, and inference. |
-| `bash/` | Saved shell commands used for paper-style experiments and evaluations. |
+| `notebooks/` | Demonstration notebooks for data exploration, training, and related workflow walkthroughs. |
+| `bash/` | Saved shell commands for repeatable experiment and evaluation runs. |
 
 ## Data Pipeline Internals
 
@@ -170,6 +168,26 @@ root_folder/
 ```
 
 Training configs usually read only the `S2/` imagery. Evaluation configs add `changes/` to compare predicted change against annotated masks.
+
+## Dataset Availability
+
+Evaluation data for the event-based presets in this repository comes from the shared Google Drive folder:
+
+- [Annotated evaluation events](https://drive.google.com/drive/folders/1VEf49IDYFXGKcfvMsfh33VSiyx5MpHEn?usp=sharing)
+
+Training data for the broader WorldFloods-style configs comes from the WorldFloods ecosystem documented in:
+
+- [spaceml-org/ml4floods](https://github.com/spaceml-org/ml4floods)
+
+![Dataset map](_illustrations/map_dataset.jpg)
+
+The pipeline is designed for event-oriented Sentinel-2 style imagery with optional change masks, and the existing configs align well with event families such as floods, fires, hurricanes, and landslides.
+
+In practice, this means:
+
+- `floods_evaluation` and related event-oriented validation runs align with the shared Google Drive evaluation set
+- `alpha_multiscene`, `alpha_multiscene_tiny`, and `alpha_singlescene` align with WorldFloods-style training data prepared through the `ml4floods` ecosystem
+- the code expects readable filesystem paths for data roots, so web links still need to be exposed through a mounted or synced path before local execution
 
 ## Model Architecture
 
@@ -341,34 +359,95 @@ That lets you mix and match:
 
 ```bash
 conda env create -f env.yaml
-conda activate ravaen_env
+conda activate edgesat_cv_env
 python test_environment.py
 ```
 
-The repository also includes `make requirements`, but the Makefile still reflects older project naming and should be treated as a legacy helper.
+The repository also includes `make requirements`, but `env.yaml` is the more direct setup path.
 
-### 2. Set your paths
+### 2. Choose your dataset source
+
+For the fastest path into the project:
+
+- use the shared Google Drive evaluation folder for event-based evaluation runs
+- use WorldFloods data prepared through [`ml4floods`](https://github.com/spaceml-org/ml4floods) for training workflows
+- download evaluation archives event-by-event with `python3 -m scripts.download_eval_events floods fires hurricanes landslides`
+- use the built-in staged demo subset for `alpha_multiscene_tiny` when you want a temporary training run without keeping the data on disk
+
+### 3. Prepare local data paths
+
+For evaluation data, `floods_evaluation` now supports automatic staged downloads. A normal run will:
+
+- download the requested event archive into `.cache/staged_archives`
+- extract it into `.cache/staged_datasets/<event>`
+- run evaluation from that temporary folder
+- delete the extracted dataset after a successful run
+
+If you want to fetch an event manually instead, the fastest route is:
+
+```bash
+pip install gdown
+python3 -m scripts.download_eval_events floods
+```
+
+That extracts the shared event archive into `datasets/floods`, which matches the default `floods_evaluation` config.
+
+For training data, `alpha_multiscene_tiny` now supports the same staged workflow using the public tiny training subset archive from the original project notebook. A normal training run with `+dataset=alpha_multiscene_tiny` will:
+
+- download `train_minisubset.zip` into `.cache/staged_archives`
+- extract it into `.cache/staged_datasets/train_minisubset`
+- train from that temporary folder
+- delete the extracted subset after a successful run
+
+For larger training configs, prepare the WorldFloods-style training folders under:
+
+- `datasets/train_multiscene`
+- `datasets/train_minisubset`
+- `datasets/train_singlescene`
+
+The larger training presets now expose the same staging hooks. They keep their local `datasets/...` defaults, but you can temporarily stage a real archive by enabling `dataset.staging` and providing a real Google Drive file ID at runtime.
+
+### 4. Set your runtime config
 
 Update one of these:
 
-- `config/config.yaml` for `log_dir`, `cache_dir`, and W&B entity
+- `config/config.yaml` for `log_dir`, `cache_dir`, W&B mode, and W&B entity
 - dataset config files in `config/dataset/` for your actual data root folders
 
-Many configs still point to `/data/...` style paths, so path overrides are usually required before running the project locally.
+By default the repo now writes cache into `.cache/`, logs and outputs into `outputs/`, uses the W&B entity `devdesai444-university-at-buffalo`, and auto-switches W&B online when credentials are available or offline when they are not.
 
-### 3. Train a model
+For authenticated online logging, use one of these local-only options before you run the repo:
+
+- run `wandb login` once in your shell
+- or export `WANDB_API_KEY` in your shell or secret manager
+
+### 5. Train a model
 
 ```bash
 python3 -m scripts.train_model \
-  +dataset=alpha_singlescene \
+  +dataset=alpha_multiscene_tiny \
   +normalisation=log_scale \
-  +channels=all \
+  +channels=high_res \
   +training=simple_vae \
-  +module=simple_vae \
+  +module=deeper_vae \
   +project=edgesat_train
 ```
 
-### 4. Evaluate a checkpoint
+For larger-scale training workflows such as `alpha_multiscene` or `alpha_singlescene`, you can either keep the expected local folder layout in `config/dataset/` or enable temporary staging with a real archive ID:
+
+```bash
+python3 -m scripts.train_model \
+  +dataset=alpha_multiscene \
+  ++dataset.staging.enabled=true \
+  ++dataset.staging.archive_id=<google-drive-file-id> \
+  +normalisation=log_scale \
+  +channels=high_res \
+  +training=simple_vae \
+  +module=deeper_vae \
+  +project=edgesat_train
+```
+
+### 6. Evaluate a checkpoint
 
 ```bash
 python3 -m scripts.evaluate_model \
@@ -378,17 +457,18 @@ python3 -m scripts.evaluate_model \
   +channels=high_res \
   +module=simple_vae \
   +evaluation=vae_base \
-  +checkpoint=/absolute/path/to/checkpoint.ckpt \
+  +checkpoint=demo_assets/checkpoints/edgesat_pretrained_vae_128_small.ckpt \
   +project=edgesat_eval
 ```
 
-### 5. Explore the notebooks
+For quick validation, you can either rely on the built-in staged download in `floods_evaluation` or fetch one event archive ahead of time with `scripts.download_eval_events`.
+
+### 7. Explore the notebooks
 
 - `notebooks/data_exploration_demo.ipynb`
 - `notebooks/training_demo.ipynb`
-- `notebooks/inference_demo.ipynb`
 
-These are useful for interactive walkthroughs, but they still contain legacy project wording from the research-code lineage.
+These are useful for interactive walkthroughs.
 
 ## Technical Caveats and Honest Notes
 
@@ -397,8 +477,7 @@ This repository is strongest as a research-engineering codebase, not a polished 
 Current caveats worth knowing:
 
 - The repo name says classification, but the implemented task is mostly unsupervised change detection.
-- Some scripts and docs still contain inherited naming from an earlier research code lineage.
-- Several configs use hard-coded absolute paths that must be overridden locally.
+- Automatic staged downloads are built in for `floods_evaluation` and `alpha_multiscene_tiny`, and the larger training presets now support the same staging flow when you provide a real archive ID at runtime.
 - The environment is pinned to an older stack around PyTorch 1.9, Lightning 1.3.x, Hydra 1.0/1.1, and older deployment scripts target even older CPU environments.
 - `scripts/eval_change_detection.py` currently exits right after model export in its present form, so it behaves more like an export utility than a full end-to-end evaluator unless you modify it.
 - There are a few config naming inconsistencies, especially around overlap-related keys between datasets and evaluation presets.

@@ -1,13 +1,9 @@
 # Data and environment preparation
 
 ## Repository and environment setup
-To clone the repository of the project, run:
-```
-git clone git@gitlab.com:frontierdevelopmentlab/fdl-europe-2021-ml-payload/change-detection.git
-```
-In this repository, a `git flow` approach is used, where the `master` branch is
-supposed to be working, `develop` to contain the cutting-edge code and the
-single features to be owned by their own branches.
+Clone the repository using the remote URL you plan to work from, then switch
+into the repository directory and choose whatever branching model fits your
+workflow.
 
 To set up the python environment, you can run:
 ```
