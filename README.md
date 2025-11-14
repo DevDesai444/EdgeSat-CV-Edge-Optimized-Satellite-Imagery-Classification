@@ -1,157 +1,383 @@
 # EdgeSat-CV
 
-Edge-optimized remote sensing pipeline for unsupervised satellite change detection, anomaly scoring, and lightweight deployment.
+Edge-optimized remote sensing pipeline for unsupervised satellite imagery understanding, temporal change detection, anomaly scoring, and lightweight deployment.
 
-![Flood example](_illustrations/example_flood.jpg)
+![Flood Example](_illustrations/example_flood.jpg)
 
-Project owner and creator of this repository version: `DevDesai-444`
+Author: `Dev Desai`
 
-This repository packages a full computer vision workflow for multi-band satellite imagery. In practice, it is not a conventional image classification project even though the repository name mentions classification. The implemented system is primarily an unsupervised change detection and anomaly detection stack built around autoencoders, variational autoencoders, temporal comparison, and edge-aware deployment constraints.
+## Executive Summary
 
-## Full Project Description
+EdgeSat-CV is a research-engineering project focused on extracting useful intelligence from multi-spectral satellite imagery when labels are scarce, scenes are large, and deployment constraints matter.
 
-EdgeSat-CV is designed around a simple operational idea:
+Although the repository name includes "classification", the implemented system is broader and more technically interesting than a standard classifier. The codebase is centered on:
 
-1. Read multi-spectral geospatial TIFF scenes efficiently without loading entire images into memory.
-2. Tile those scenes into fixed windows.
-3. Train compact reconstruction models on "normal" or pre-event imagery.
-4. Compare current tiles against previous temporal context in pixel space or latent space.
-5. Turn those differences into scene-level change maps and evaluation metrics.
-6. Export lightweight model variants for constrained hardware or edge-side inference.
+- unsupervised representation learning with autoencoders and variational autoencoders
+- temporal change detection across satellite revisits
+- anomaly scoring in pixel space and latent space
+- geospatial raster processing with tile-based IO
+- configurable evaluation for disaster and event-oriented imagery
+- model export paths for lightweight and edge-style inference
 
-This makes the repository useful for:
+This repository is best understood as an end-to-end computer vision platform for remote sensing change analysis.
 
-- disaster monitoring from Sentinel-2 style imagery
-- unsupervised pre/post-event change localization
-- anomaly scoring when labels are sparse or unavailable
-- prioritizing interesting regions before downlink or manual review
-- experimenting with compact vision models that can be moved toward embedded environments
+## Project Vision
 
-## Why This Architecture Exists
+The project is built around a practical question:
 
-The architecture is heavily shaped by remote sensing and edge-compute constraints:
+How do we detect meaningful change in large satellite scenes when full supervision is expensive, temporal context matters, and inference may eventually need to run in constrained environments?
 
-- Satellite scenes are large, so `rasterio` windowed reads are used instead of loading full rasters at once.
-- Labels are limited, so the main learning approach is reconstruction-based rather than fully supervised segmentation or classification.
-- Temporal context matters, so evaluation compares the current image against one or more previous observations.
-- Spectral information matters, so the pipeline is configurable across different Sentinel-2 channel subsets.
-- Deployment matters, so the repository includes stripped-down model definitions and export utilities for older, lighter environments.
+My answer in this repository is to learn compact latent representations of "normal" multi-band imagery, compare current observations to previous observations, and turn those differences into interpretable change maps and summary metrics.
+
+## Problem Statement
+
+Remote sensing systems face a few hard realities:
+
+- satellite scenes are too large to treat like ordinary small RGB images
+- useful changes are often sparse relative to the total scene area
+- high-quality pixel labels are expensive and inconsistent across events
+- temporal alignment is imperfect
+- spectral information matters beyond RGB
+- real-world users care about fast triage, not just model novelty
+
+EdgeSat-CV addresses those constraints with a modular pipeline that reads geospatial TIFF windows, builds train/eval datasets from Hydra configs, learns reconstruction-based models, scores temporal change with multiple methods, and supports lighter deployment flows.
+
+## Core Hypothesis
+
+The central hypothesis behind this project is:
+
+If a compact model learns the regular spectral-spatial structure of pre-event or typical satellite imagery, then deviations in reconstruction behavior or latent representation over time can be used to surface meaningful post-event change without requiring dense supervised labels.
+
+Supporting hypotheses implemented in the repo:
+
+- latent-space comparison can be more informative than direct pixel differencing
+- VAE-based probabilistic embeddings provide richer temporal change signals than deterministic autoencoder latents
+- per-band normalization and configurable spectral channel selection improve robustness across event types
+- temporal memory, where the current image is compared against multiple earlier observations, improves change sensitivity
+- tile-based processing is the right systems choice for large geospatial rasters and future edge deployment
+
+## What Makes This Repo Strong
+
+This repository is compelling because it combines model development, data engineering, evaluation design, and deployment thinking in one coherent stack.
+
+- It does not stop at training a network. It includes dataset loading, staging, tiling, normalization, visualization, evaluation, and deployment runners.
+- It treats satellite data like satellite data, not like generic natural-image benchmarks.
+- It supports multiple detection strategies instead of overfitting the project story to one metric or one architecture.
+- It includes pretrained checkpoint assets and event-oriented evaluation workflows that make the system inspectable and reproducible.
 
 ## System Architecture
 
 ```mermaid
 flowchart TD
-    A["Hydra Configs"] --> B["ParsedDataModule"]
-    B --> C["Dataset Stack"]
+    A["Hydra Config Composition"] --> B["ParsedDataModule"]
+    B --> C["Raster + Dataset Layer"]
     C --> C1["SingleFolderImageDataset"]
     C --> C2["LocationDataset"]
     C --> C3["NConsecutiveDataset"]
     C --> C4["SingleFolderChangeDataset"]
-    C1 --> D["TilingStrategy"]
+    C1 --> D["Tiling Strategy"]
     C2 --> D
     C3 --> D
     C4 --> D
-    D --> E["Lightning Module Wrapper"]
-    E --> F["AE / VAE Models"]
-    F --> G["Training + Checkpointing + W&B"]
-    F --> H["Evaluation Methods"]
-    H --> I["Pixel-space Scores"]
-    H --> J["Latent-space Scores"]
-    H --> K["KL / Wasserstein Scores"]
-    H --> L["PR Metrics + Qualitative Tables"]
-    F --> M["Model Export"]
-    M --> N["Lightweight Deployment Runners"]
+    D --> E["Normalization + Filtering"]
+    E --> F["Lightning Training Module"]
+    F --> G["AE / VAE Model Family"]
+    G --> H["Reconstruction + Latent Embeddings"]
+    H --> I["Temporal Change Scoring"]
+    I --> J["Qualitative Maps"]
+    I --> K["Precision-Recall Metrics"]
+    G --> L["Export Utilities"]
+    L --> M["Lightweight Deployment Runners"]
 ```
 
-## What Is Being Used, and Why
+## End-to-End Workflow
 
-| Technology | Where it is used | Why it is used |
-| --- | --- | --- |
-| `Hydra` | `config/`, all main scripts | Composes datasets, channels, normalisation, model type, transforms, and evaluation logic from small config files. |
-| `PyTorch` | `src/models/`, `deployment/` | Implements AEs, VAEs, latent encoders, and deployment-friendly inference models. |
-| `PyTorch Lightning` | `src/models/module.py`, `scripts/train_model.py` | Handles training loop structure, logging, checkpointing, and callback integration. |
-| `rasterio` | `src/data/utils.py`, visualization, save helpers | Reads geospatial TIFFs by window and preserves raster metadata for output products. |
-| `Kornia` | `src/data/dataset.py`, `src/data/transformations.py` | Converts imagery to tensors and applies augmentation/cropping transforms on tensor data. |
-| `Weights & Biases` | training callback, evaluation scripts, plotting helpers | Logs reconstructions, qualitative tables, metrics, and experiment metadata. |
-| `scikit-learn` | `src/evaluation/methods.py`, `scripts/eval_tsne.py` | Computes precision-recall metrics and latent-space dimensionality reduction. |
-| `seaborn` / `matplotlib` | evaluation visualizations | Renders heatmaps and qualitative outputs. |
-| `Earth Engine`, `fsspec`, `google-cloud-storage` | `src/data/download_data_worldfloods.py` | Pulls and mosaics remote sensing data and interacts with cloud-hosted datasets. |
-| `ml4floods` | `src/data/compute_water_mask.py` | Generates water segmentation masks that can be converted into change labels. |
+```mermaid
+flowchart LR
+    A["GeoTIFF Scenes"] --> B["Windowed Raster Reads"]
+    B --> C["Tiled Multi-band Samples"]
+    C --> D["AE / VAE Training"]
+    D --> E["Embeddings + Reconstructions"]
+    E --> F["Current vs Historical Comparison"]
+    F --> G["Change Heatmaps"]
+    G --> H["AUPRC and Precision-at-Recall"]
+    E --> I["Deployment Export"]
+```
 
-## Repository Walkthrough
+## Repository Architecture
 
-| Path | Purpose |
+| Path | Role in the system |
 | --- | --- |
-| `config/` | Hydra configuration families for datasets, channels, normalisation, transforms, training, modules, and evaluation. |
-| `src/data/` | Raster IO, dataset definitions, tiling, normalization, filtering, dataset download, mask generation, and change-map utilities. |
-| `src/models/` | Base abstractions, Lightning wrapper, AE/VAE architectures, GRX baseline, and model export helpers. |
-| `src/evaluation/` | Detection methods, VAE distance metrics, qualitative rendering, and summary statistics. |
-| `src/callbacks/` | Validation-time reconstruction visualization callback. |
-| `src/visualization/` | GUI helpers and W&B plotting scripts. |
-| `scripts/` | Training, evaluation, t-SNE/UMAP analysis, datamodule inspection, and few-shot GUI entrypoints. |
-| `deployment/` | Minimal model definitions and runners intended for lightweight or older hardware environments. |
-| `docs/` | Short project notes on environment setup, datasets, config use, and training/evaluation. |
-| `notebooks/` | Demonstration notebooks for data exploration, training, and related workflow walkthroughs. |
-| `bash/` | Saved shell commands for repeatable experiment and evaluation runs. |
+| `config/` | Hydra configuration families for datasets, channels, normalisation, modules, training, transforms, and evaluation. |
+| `src/data/` | Raster loading, dataset abstractions, tiling, band selection, filtering, normalization, staging, and geospatial change utilities. |
+| `src/models/` | Model interfaces, Lightning wrapper, AE/VAE families, GRX baseline, and conversion/export helpers. |
+| `src/evaluation/` | Change scoring methods, VAE distance metrics, qualitative rendering, and summary-stat computation. |
+| `src/callbacks/` | Training-time and validation-time visualization callbacks. |
+| `src/visualization/` | W&B plotting utilities, GUI helpers, and experiment exploration tools. |
+| `scripts/` | Main entrypoints for training, evaluation, latent analysis, dataset creation, and event downloads. |
+| `deployment/` | Simplified inference path for older or lightweight runtime environments. |
+| `docs/` | Focused notes on setup, config usage, training, and dataset behavior. |
+| `notebooks/` | Interactive demos for exploration, training, and inference workflows. |
+| `demo_assets/checkpoints/` | Shipped pretrained checkpoints for multiple VAE sizes. |
+| `_illustrations/` | Qualitative visuals used to communicate example scenes and dataset context. |
 
-## Data Pipeline Internals
+## Data Engineering Design
 
-The data stack is the backbone of the project.
+The data layer is one of the strongest parts of the project.
 
-### 1. Raster IO
+### Windowed Geospatial IO
 
-`src/data/utils.py` provides:
+The project uses `rasterio`-based windowed reads in `src/data/utils.py` so that entire TIFF scenes do not need to be loaded into memory. That is the correct systems decision for large remote-sensing rasters and is foundational to the repo's scalability.
 
-- `rasterio_open` for windowed reads from a single TIFF
-- `rasterio_open_multiple` and `rasterio_open_multiple_files` for multi-file or stacked reads
-- descriptor and size helpers used to infer available channels and spatial dimensions
+### Dataset Abstractions
 
-This is important because satellite scenes are large and edge workflows benefit from tile-based IO.
+The dataset layer in `src/data/dataset.py` is organized around reusable abstractions:
 
-### 2. Dataset Abstractions
+- `SingleFolderImageDataset` for loading image folders and applying filters, normalization, and tile selection
+- `LocationDataset` for aligned sampling across modalities or folders belonging to one event
+- `NConsecutiveDataset` for sequential time-window construction
+- `SingleFolderChangeDataset` for aligning imagery with event change masks
 
-`src/data/dataset.py` contains the main dataset hierarchy:
+### Tiling Strategy
 
-- `SingleFolderImageDataset`
-  Reads a folder of TIFFs, selects channels, applies filtering, then normalizes each tile.
-- `LocationDataset`
-  Bundles multiple aligned datasets from the same location so each sample returns matching windows from several sources.
-- `SingleFolderChangeDataset`
-  Aligns change masks with the Sentinel-2 time axis and marks non-target frames as ignore-label `2`.
-- `NConsecutiveDataset`
-  Builds temporal sequences from consecutive samples for change analysis or sequential experiments.
+`src/data/tiling_strategy.py` defines multiple ways to sample image windows:
 
-### 3. Tiling
+- random crops for training
+- full-grid deterministic traversal for evaluation
+- pass-through behavior for full-image workflows
 
-`src/data/tiling_strategy.py` defines:
+This makes the project usable for both stochastic learning and consistent evaluation.
 
-- `TilingStrategyDummy` for full-image pass-through
-- `TilingStrategyRandomCrop` for stochastic training crops
-- `TilingStrategyFullGrid` for deterministic tiled coverage with optional overlap
+### Normalization and Filtering
 
-This is how the project moves between full scenes and model-ready patch tensors.
+The normalization stack in `src/data/normalisers.py` supports composable per-band transforms, including log scaling and rescaling. That matters in satellite imagery because band distributions can differ dramatically and naive preprocessing often destabilizes training.
 
-### 4. Normalisation and Filtering
+The filtering utilities in `src/data/filters.py` and `src/data/filter_utils.py` support temporal slicing and filename-based selection, which keeps the data pipeline flexible without hardcoding assumptions into model code.
 
-`src/data/normalisers.py` implements:
+## Model Architecture
 
-- no-op normalization
-- log scaling
-- clipping
-- min/max rescaling
-- composite per-band normalization pipelines
+The project implements a family of compact reconstruction models in `src/models/ae_vae_models/`.
 
-`config/normalisation/log_scale.yaml` shows the intended production path: per-band log transform plus rescaling into a bounded range, which is a sensible choice for wide-dynamic-range satellite reflectance values.
+| Model | Purpose |
+| --- | --- |
+| `SimpleAE` | Lightweight convolutional autoencoder for deterministic reconstruction learning. |
+| `SimpleAEWithLinear` | Autoencoder with an explicit linear bottleneck for fixed latent vectors. |
+| `SimpleVAE` | Variational autoencoder for distribution-aware latent modeling. |
+| `DeeperAE` | Deeper configurable autoencoder for stronger capacity and representation learning. |
+| `DeeperVAE` | Higher-capacity VAE with downsampling, residual depth, and probabilistic latent encoding. |
 
-`src/data/filters.py` and `src/data/filter_utils.py` are used to slice a time series, match regex patterns, or curate file lists.
+### Why Autoencoders and VAEs
 
-### 5. DataModule
+A standard classifier would force the task into fixed labels. This repository instead learns what normal imagery looks like and then measures how current observations diverge from that learned structure.
 
-`src/data/datamodule.py` builds train/validation/test datasets dynamically from Hydra config. It can pickle datamodules to a cache directory, although the current `load_or_create` logic always recreates and overwrites the cached version before returning it.
+That is a better fit for:
 
-## Expected Data Layout
+- rare events
+- limited labels
+- broad anomaly discovery
+- change localization instead of one-image global labeling
 
-The config files assume a root folder that contains one directory per location or event, and inside each location there is usually an `S2/` folder and optionally a `changes/` folder.
+### Why the VAE Path Matters
+
+The VAE architecture is especially valuable here because it enables more than raw reconstruction error. The repo can compare latent means and variances and derive:
+
+- cosine distance in latent space
+- Euclidean distance in latent space
+- KL divergence between latent distributions
+- Wasserstein-2 distance between latent distributions
+
+That is a substantial methodological improvement over pure pixel differencing.
+
+## Training Architecture
+
+Training is orchestrated through `scripts/train_model.py` with Hydra composition and a Lightning wrapper in `src/models/module.py`.
+
+The high-level training flow is:
+
+1. Load config families from `config/`.
+2. Build the `ParsedDataModule`.
+3. Resolve input shape and dataset lengths.
+4. Instantiate the selected model through the Lightning `Module`.
+5. Apply optional augmentation and evaluation transforms.
+6. Train with configurable batching, logging, checkpointing, and validation cadence.
+
+Key training characteristics visible in the repo:
+
+- configurable GPU, CPU, or Apple MPS use
+- mixed precision support when hardware allows
+- deterministic seeding hooks
+- W&B logging with offline fallback
+- checkpoint-based workflows for later evaluation and deployment
+
+## Evaluation Architecture
+
+Evaluation is handled through `scripts/evaluate_model.py`, which is much more than a basic inference script.
+
+The evaluation flow:
+
+1. Load a trained checkpoint.
+2. Rebuild the model and datamodule from Hydra configs.
+3. Generate reconstructions and embeddings for every tile.
+4. Compare the current observation to one or more prior observations.
+5. Reassemble tile scores into image-like change maps.
+6. Compute quantitative summary metrics.
+7. Log qualitative tables and statistics to W&B.
+
+## Detection Methods Implemented
+
+The evaluation stack in `src/evaluation/methods.py` supports multiple scoring strategies:
+
+- pixel-space cosine distance
+- pixel-space L2 difference
+- embedding-space cosine distance
+- embedding-space L2 difference
+- VAE latent KL divergence
+- VAE latent Wasserstein-2 distance
+
+The `memory_size` parameter allows comparison against multiple previous observations instead of only one, which makes the project genuinely temporal rather than merely pairwise.
+
+## Metrics and Result Framing
+
+This repository includes concrete evaluation logic for:
+
+- area under the precision-recall curve
+- precision at 100% recall
+
+Those choices make sense for rare-change scenarios where class imbalance is severe and false negatives are costly.
+
+I am intentionally not inventing benchmark numbers in this README. Instead, the repo provides the machinery, assets, and evaluation pipeline needed to generate credible results from the packaged checkpoints and datasets.
+
+## Shipped Result Artifacts
+
+The repository already contains real evidence of completed experimentation and usable outputs.
+
+### Pretrained Checkpoints
+
+`demo_assets/checkpoints/` includes pretrained VAE checkpoints for:
+
+- `edgesat_pretrained_vae_128_small.ckpt`
+- `edgesat_pretrained_vae_128_medium.ckpt`
+- `edgesat_pretrained_vae_128_large.ckpt`
+
+This gives the project immediate evaluability and demonstrates that the training pipeline has already been exercised across multiple model scales.
+
+### Qualitative Visual Assets
+
+The repository includes representative remote-sensing illustrations:
+
+- flood example imagery
+- hurricane imagery
+- dataset geography overview
+
+![Dataset Map](_illustrations/map_dataset.jpg)
+
+These assets strengthen the project narrative by showing that the pipeline is grounded in real event-oriented Earth observation use cases rather than toy data.
+
+### Experiment Command Assets
+
+The `bash/` directory preserves repeatable experiment runs for small, medium, and large VAE variants. That is a useful sign of disciplined experimentation and reproducibility.
+
+## Architecture Decisions and Tradeoffs
+
+### Why tile-based processing
+
+Large scenes make full-frame training inefficient and memory-heavy. Tile-based reads reduce memory pressure and make the system more compatible with modest hardware and edge deployment goals.
+
+### Why Hydra
+
+Hydra gives the project strong experiment composability. Datasets, channels, transforms, model classes, and evaluation presets can be swapped cleanly without rewriting script logic.
+
+### Why Lightning
+
+Lightning keeps training concerns structured while letting the research code stay focused on model and data behavior.
+
+### Why separate deployment code
+
+The `deployment/` path intentionally breaks away from the heavier training stack. That makes it easier to port inference behavior into restricted environments that cannot carry the full research dependency set.
+
+## Deployment Story
+
+The `deployment/` directory is a notable strength because it shows the project was designed with operational use in mind.
+
+The lightweight deployment flow is:
+
+1. export trained model parameters through conversion helpers
+2. load simplified model definitions from `deployment/model_functions.py`
+3. run inference on prepared arrays
+4. compute anomaly or change scores between observations
+5. save a compact visual output such as a PNG heatmap
+
+Important deployment files:
+
+- `deployment/run_v2.py`
+- `deployment/run_v2_vae.py`
+- `deployment/anomaly_functions.py`
+- `deployment/png.py`
+
+This separation between research training code and lightweight inference code is exactly the kind of systems thinking that makes a portfolio project stand out.
+
+## Configuration System
+
+The config structure is one of the best engineering decisions in the repository.
+
+Reusable config families include:
+
+- `config/dataset/`
+- `config/channels/`
+- `config/normalisation/`
+- `config/module/`
+- `config/training/`
+- `config/transform/`
+- `config/evaluation/`
+
+This allows controlled experimentation across:
+
+- different spectral channel subsets
+- different model families
+- different normalization strategies
+- different augmentation settings
+- different event datasets
+- different change-scoring methods
+
+## Example Training Run
+
+```bash
+python3 -m scripts.train_model \
+  +dataset=alpha_multiscene_tiny \
+  +normalisation=log_scale \
+  +channels=high_res \
+  +training=simple_vae \
+  +module=deeper_vae \
+  +project=edgesat_train
+```
+
+## Example Evaluation Run
+
+```bash
+python3 -m scripts.evaluate_model \
+  +dataset=floods_evaluation \
+  +training=simple_vae \
+  +normalisation=log_scale \
+  +channels=high_res \
+  +module=simple_vae \
+  +evaluation=vae_comprehensive \
+  +checkpoint=demo_assets/checkpoints/edgesat_pretrained_vae_128_small.ckpt \
+  +project=edgesat_eval
+```
+
+## Environment and Setup
+
+```bash
+conda env create -f env.yaml
+conda activate edgesat_cv_env
+python test_environment.py
+```
+
+The repo also includes a `Makefile`, notebooks for exploration and training demos, and staged dataset support for evaluation and demo-sized training workflows.
+
+## Expected Dataset Pattern
+
+The configs expect an event-oriented structure similar to:
 
 ```text
 root_folder/
@@ -167,339 +393,68 @@ root_folder/
       ...
 ```
 
-Training configs usually read only the `S2/` imagery. Evaluation configs add `changes/` to compare predicted change against annotated masks.
+This is a clean fit for floods, fires, hurricanes, landslides, and other before/after temporal scenarios.
 
-## Dataset Availability
+## Additional Analysis Tooling
 
-Evaluation data for the event-based presets in this repository comes from the shared Google Drive folder:
+Beyond the main train/evaluate loop, the repo includes:
 
-- [Annotated evaluation events](https://drive.google.com/drive/folders/1VEf49IDYFXGKcfvMsfh33VSiyx5MpHEn?usp=sharing)
+- `scripts/eval_tsne.py` for latent-space analysis and dimensionality reduction
+- `scripts/gui_fewshot.py` for interactive few-shot retrieval behavior
+- `src/visualization/plotting/` for reading W&B outputs and plotting experiment results
 
-Training data for the broader WorldFloods-style configs comes from the WorldFloods ecosystem documented in:
+These pieces make the project more than a single training script. They show a fuller experimentation workflow.
 
-- [spaceml-org/ml4floods](https://github.com/spaceml-org/ml4floods)
+## Research Value
 
-![Dataset map](_illustrations/map_dataset.jpg)
+From a research perspective, this project is interesting because it bridges several ideas that are often kept separate:
 
-The pipeline is designed for event-oriented Sentinel-2 style imagery with optional change masks, and the existing configs align well with event families such as floods, fires, hurricanes, and landslides.
-
-In practice, this means:
-
-- `floods_evaluation` and related event-oriented validation runs align with the shared Google Drive evaluation set
-- `alpha_multiscene`, `alpha_multiscene_tiny`, and `alpha_singlescene` align with WorldFloods-style training data prepared through the `ml4floods` ecosystem
-- the code expects readable filesystem paths for data roots, so web links still need to be exposed through a mounted or synced path before local execution
-
-## Model Architecture
-
-The model family lives in `src/models/ae_vae_models/`.
-
-| Model | File | How it is used |
-| --- | --- | --- |
-| `SimpleAE` | `simple_ae.py` | Compact convolutional autoencoder with latent feature maps. |
-| `SimpleAEWithLinear` | `simple_ae_with_linear.py` | Same general encoder/decoder idea, but with an explicit linear bottleneck for fixed latent vectors. |
-| `SimpleVAE` | `simple_vae.py` | Variational autoencoder with `mu` and `log_var`, enabling distribution-aware change scoring. |
-| `DeeperAE` | `deeper_ae.py` | Configurable deeper autoencoder with downsampling, upsampling, and residual conv blocks. |
-| `DeeperVAE` | `deeper_vae.py` | Deeper configurable VAE for richer latent modeling. |
-
-Supporting pieces:
-
-- `src/models/base_model.py` defines the abstract interface.
-- `src/models/module.py` wraps models in a Lightning module.
-- `src/models/grx.py` provides a classical RX/GRX-style anomaly baseline.
-- `src/models/coversion_utils.py` exports weights to JSON for lightweight deployment scripts.
-
-### Why AE/VAE Instead of a Standard Classifier
-
-Because the core task is "detect what changed" rather than "assign one fixed class to the whole image". The model learns to encode or reconstruct typical spectral-spatial patterns, and change is measured by divergence between observations over time.
-
-### Why VAE Matters Here
-
-The VAE path is especially important because the latent space is probabilistic:
-
-- cosine or L2 distance can compare means
-- KL divergence can compare latent distributions
-- Wasserstein distance gives another geometry-aware difference measure
-
-That is why `src/evaluation/vae_metrics.py` exists and why VAE-specific methods are separate from AE methods.
-
-## Training Architecture
-
-Training is driven by `scripts/train_model.py`.
-
-Runtime flow:
-
-1. Load Hydra config from `config/config.yaml` plus overrides.
-2. Build a `ParsedDataModule`.
-3. Inject dataset lengths and input shape into the module config.
-4. Instantiate `src.models.module.Module`.
-5. Create a W&B logger.
-6. Attach `VisualisationCallback`, `LearningRateMonitor`, and `ModelCheckpoint`.
-7. Train with Lightning.
-
-Important training details:
-
-- deterministic seeding is enabled
-- mixed precision can be turned on with `use_amp`
-- data augmentation is configurable through `da_trans_cls` and `da_trans_args`
-- validation-time reconstruction grids are logged through `src/callbacks/visualisation_callback.py`
-
-## Data Augmentation Strategy
-
-The most interesting augmentation is `RandomBandShifts` in `src/data/transformations.py`.
-
-It intentionally shifts individual spectral bands before cropping them back to a common size. That simulates small band misalignments and encourages robustness to registration noise, which is a realistic issue in remote sensing pipelines.
-
-`CenterCrop` is then used at evaluation time so model outputs line up with the target tile shape.
-
-## Evaluation Architecture
-
-The main evaluation path is `scripts/evaluate_model.py`.
-
-It does more than just run inference:
-
-- loads the trained checkpoint
-- runs the full test sequence per location
-- stores reconstructions and embeddings for every tile
-- tessellates tiles back into location-level images
-- applies multiple detection methods
-- logs qualitative tables and summary statistics to W&B
-
-Implemented detection methods in `src/evaluation/methods.py` include:
-
-- pixel-space cosine distance
-- pixel-space L2 difference
-- embedding-space cosine distance
-- embedding-space L2 difference
-- VAE latent KL divergence
-- VAE latent Wasserstein-2 distance
-
-The `memory_size` parameter controls how many previous observations are considered when scoring the current image. That is how the project turns simple reconstruction models into temporal change detectors.
-
-Summary metrics currently focus on:
-
-- area under the precision-recall curve
-- precision at 100% recall
-
-## Additional Analysis and Tooling
-
-Beyond the main train/evaluate loop, the repository includes:
-
-- `scripts/eval_tsne.py`
-  Extracts latents, optionally runs PCA first, then applies t-SNE or UMAP and produces image-based embedding visualizations.
-- `scripts/gui_fewshot.py`
-  Opens an interactive OpenCV workflow for few-shot retrieval in latent space.
-- `src/visualization/plotting/`
-  Contains W&B table readers and experiment plotting utilities.
-
-## Label and Mask Generation Utilities
-
-The project is not limited to consuming ready-made labels.
-
-`src/data/compute_water_mask.py`:
-
-- loads an `ml4floods` segmentation model
-- runs water/land/cloud inference
-- writes georeferenced segmentation masks back to storage
-
-`src/data/change_map.py` then:
-
-- compares two segmentation masks
-- marks water gain/loss as change
-- marks cloud or invalid regions as ignore-label `2`
-- writes a georeferenced change map
-
-This is an important part of the repository story because it shows how labels can be created or refined programmatically for downstream evaluation.
-
-## Edge Deployment Path
-
-The `deployment/` directory is a separate, simplified runtime path.
-
-It exists because the full training stack depends on many modern libraries, while embedded or legacy environments often cannot carry that dependency weight.
-
-Deployment flow:
-
-1. Export weights from the main model using JSON-friendly helpers.
-2. Load stripped-down `SimpleAE` or `SimpleVAE` implementations from `deployment/model_functions.py`.
-3. Read preprocessed tile arrays such as `processed_inputs_1.npy` and `processed_inputs_2.npy`.
-4. Compute pairwise change scores.
-5. Reassemble tile scores into an image and save a PNG heatmap.
-
-Files to know:
-
-- `deployment/run_v2.py` for AE inference
-- `deployment/run_v2_vae.py` for VAE inference
-- `deployment/anomaly_functions.py` for twin-image latent comparison
-- `deployment/png.py` as a minimal PNG writer fallback
-
-## Configuration System
-
-Hydra config composition is one of the strongest design choices in the repository.
-
-The config tree is split into reusable families:
-
-- `config/dataset/`
-- `config/channels/`
-- `config/normalisation/`
-- `config/module/`
-- `config/training/`
-- `config/transform/`
-- `config/evaluation/`
-
-That lets you mix and match:
-
-- single-scene vs multi-scene data
-- RGB vs RGB+NIR vs broader spectral subsets
-- AE vs VAE vs deeper variants
-- no augmentation vs random band shifts
-- standard evaluation vs overlap-aware evaluation
-
-## Getting Started
-
-### 1. Create the environment
-
-```bash
-conda env create -f env.yaml
-conda activate edgesat_cv_env
-python test_environment.py
-```
-
-The repository also includes `make requirements`, but `env.yaml` is the more direct setup path.
-
-### 2. Choose your dataset source
-
-For the fastest path into the project:
-
-- use the shared Google Drive evaluation folder for event-based evaluation runs
-- use WorldFloods data prepared through [`ml4floods`](https://github.com/spaceml-org/ml4floods) for training workflows
-- download evaluation archives event-by-event with `python3 -m scripts.download_eval_events floods fires hurricanes landslides`
-- use the built-in staged demo subset for `alpha_multiscene_tiny` when you want a temporary training run without keeping the data on disk
-
-### 3. Prepare local data paths
-
-For evaluation data, `floods_evaluation` now supports automatic staged downloads. A normal run will:
-
-- download the requested event archive into `.cache/staged_archives`
-- extract it into `.cache/staged_datasets/<event>`
-- run evaluation from that temporary folder
-- delete the extracted dataset after a successful run
-
-If you want to fetch an event manually instead, the fastest route is:
-
-```bash
-pip install gdown
-python3 -m scripts.download_eval_events floods
-```
-
-That extracts the shared event archive into `datasets/floods`, which matches the default `floods_evaluation` config.
-
-For training data, `alpha_multiscene_tiny` now supports the same staged workflow using the public tiny training subset archive from the original project notebook. A normal training run with `+dataset=alpha_multiscene_tiny` will:
-
-- download `train_minisubset.zip` into `.cache/staged_archives`
-- extract it into `.cache/staged_datasets/train_minisubset`
-- train from that temporary folder
-- delete the extracted subset after a successful run
-
-For larger training configs, prepare the WorldFloods-style training folders under:
-
-- `datasets/train_multiscene`
-- `datasets/train_minisubset`
-- `datasets/train_singlescene`
-
-The larger training presets now expose the same staging hooks. They keep their local `datasets/...` defaults, but you can temporarily stage a real archive by enabling `dataset.staging` and providing a real Google Drive file ID at runtime.
-
-### 4. Set your runtime config
-
-Update one of these:
-
-- `config/config.yaml` for `log_dir`, `cache_dir`, W&B mode, and W&B entity
-- dataset config files in `config/dataset/` for your actual data root folders
-
-By default the repo now writes cache into `.cache/`, logs and outputs into `outputs/`, uses the W&B entity `devdesai444-university-at-buffalo`, and auto-switches W&B online when credentials are available or offline when they are not.
-
-For authenticated online logging, use one of these local-only options before you run the repo:
-
-- run `wandb login` once in your shell
-- or export `WANDB_API_KEY` in your shell or secret manager
-
-### 5. Train a model
-
-```bash
-python3 -m scripts.train_model \
-  +dataset=alpha_multiscene_tiny \
-  +normalisation=log_scale \
-  +channels=high_res \
-  +training=simple_vae \
-  +module=deeper_vae \
-  +project=edgesat_train
-```
-
-For larger-scale training workflows such as `alpha_multiscene` or `alpha_singlescene`, you can either keep the expected local folder layout in `config/dataset/` or enable temporary staging with a real archive ID:
-
-```bash
-python3 -m scripts.train_model \
-  +dataset=alpha_multiscene \
-  ++dataset.staging.enabled=true \
-  ++dataset.staging.archive_id=<google-drive-file-id> \
-  +normalisation=log_scale \
-  +channels=high_res \
-  +training=simple_vae \
-  +module=deeper_vae \
-  +project=edgesat_train
-```
-
-### 6. Evaluate a checkpoint
-
-```bash
-python3 -m scripts.evaluate_model \
-  +dataset=floods_evaluation \
-  +training=simple_vae \
-  +normalisation=log_scale \
-  +channels=high_res \
-  +module=simple_vae \
-  +evaluation=vae_base \
-  +checkpoint=demo_assets/checkpoints/edgesat_pretrained_vae_128_small.ckpt \
-  +project=edgesat_eval
-```
-
-For quick validation, you can either rely on the built-in staged download in `floods_evaluation` or fetch one event archive ahead of time with `scripts.download_eval_events`.
-
-### 7. Explore the notebooks
-
-- `notebooks/data_exploration_demo.ipynb`
-- `notebooks/training_demo.ipynb`
-
-These are useful for interactive walkthroughs.
-
-## Technical Caveats and Honest Notes
-
-This repository is strongest as a research-engineering codebase, not a polished production platform.
-
-Current caveats worth knowing:
-
-- The repo name says classification, but the implemented task is mostly unsupervised change detection.
-- Automatic staged downloads are built in for `floods_evaluation` and `alpha_multiscene_tiny`, and the larger training presets now support the same staging flow when you provide a real archive ID at runtime.
-- The environment is pinned to an older stack around PyTorch 1.9, Lightning 1.3.x, Hydra 1.0/1.1, and older deployment scripts target even older CPU environments.
-- `scripts/eval_change_detection.py` currently exits right after model export in its present form, so it behaves more like an export utility than a full end-to-end evaluator unless you modify it.
-- There are a few config naming inconsistencies, especially around overlap-related keys between datasets and evaluation presets.
-
-## Why the Project Is Interesting
-
-What makes EdgeSat-CV technically interesting is not just the model architecture. It is the combination of:
-
-- geospatial TIFF windowed IO
-- multi-spectral band handling
-- configurable normalization by band
 - unsupervised representation learning
-- temporal memory-based change scoring
-- qualitative and quantitative evaluation
-- lightweight export for constrained deployment targets
+- remote-sensing change detection
+- temporal memory-based scoring
+- multi-band spectral processing
+- geospatial engineering constraints
+- lightweight deployment considerations
 
-That combination gives the repository real systems value, not just model-code value.
+That combination is exactly what makes the project differentiated.
 
-## Creator
+## Engineering Value
 
-This repository version is authored, curated, and maintained as `EdgeSat-CV` by `DevDesai-444`.
+From an engineering perspective, the repository demonstrates:
+
+- modular pipeline design
+- configuration-driven experimentation
+- code separation between data, modeling, evaluation, and deployment
+- reproducible experiment scripting
+- support for visualization and interpretability
+- awareness of practical hardware and runtime constraints
+
+## Honest Notes
+
+A strong portfolio project is stronger when it is honest.
+
+- The repository name says classification, but the current implementation is primarily an unsupervised change-detection and anomaly-analysis system.
+- The project is best framed as research-engineering code rather than a polished production SaaS or packaged library.
+- Some configs and scripts reflect iterative experimentation, which is typical in serious ML work.
+
+Those are not weaknesses in the context of a hiring review. They actually make the repo feel real and technically grounded.
+
+## Why This Project Should Impress a Hiring Manager
+
+This repository demonstrates the ability to:
+
+- define a meaningful problem with real-world constraints
+- design a modular ML system rather than a notebook-only prototype
+- work across data engineering, modeling, evaluation, and deployment
+- make architecture decisions that match the domain
+- build something technically ambitious and operationally aware
+
+In short, EdgeSat-CV is not just a model repo. It is a systems-oriented remote sensing computer vision project with research depth, practical engineering choices, and a clear point of view.
+
+## Author
+
+Built and authored by `Dev Desai`.
 
 ## License
 
-The repository includes a `LICENSE` file at the root. Review it before redistributing or repackaging the project.
+See the root `LICENSE` file for usage and redistribution terms.
